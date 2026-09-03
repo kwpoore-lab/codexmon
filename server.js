@@ -12,6 +12,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const readline = require('readline');
 
 // ---------------------------------------------------------------------------
 // config
@@ -172,9 +173,17 @@ function extractCmd(name, input) {
       return parts.join(' ');
     }
   }
+  // cmd: '…' (single-quoted)
+  m = input.match(/["']?cmd["']?\s*:\s*'((?:[^'\\]|\\.)*)'/);
+  if (m) return unesc(m[1]);
   // command: "…" (some tools)
   m = input.match(/["']?command["']?\s*:\s*"((?:[^"\\]|\\.)*)"/);
   if (m) return unesc(m[1]);
+  // Codex tool call: `const r = await tools.<toolname>({...})`
+  m = input.match(/tools\.([A-Za-z0-9_]+)\s*\(/);
+  if (m) return m[1];
+  // inline JS scripting with no shell / tool call
+  if (/^\s*(const |let |var |text\(|[A-Z_]{3,}\.|await |for \(|if \()/.test(input)) return 'js';
   // last resort: first non-empty, non-boilerplate line
   const line = input.split('\n').map((l) => l.trim())
     .find((l) => l && !/^(const|let|var|await|tools\.|text\(|return|\}|\/\/)/.test(l));
@@ -265,7 +274,11 @@ function applyLine(sum, raw) {
     return;
   }
 
-  if (o.type === 'event_msg' && p.type === 'task_started') { sum.turnsStarted++; sum.taskActive = true; return; }
+  if (o.type === 'event_msg' && p.type === 'task_started') {
+    sum.turnsStarted++; sum.taskActive = true; sum.curTurn = sum.turnsStarted;
+    sum.turnStartTs = ts;
+    return;
+  }
   if (o.type === 'event_msg' && (p.type === 'task_complete' || p.type === 'turn_complete')) { sum.turnsCompleted++; sum.taskActive = false; return; }
 
   // --- response items ---
@@ -288,7 +301,7 @@ function applyLine(sum, raw) {
       sum.toolCallCount++;
       const input = typeof p.input === 'string' ? p.input : JSON.stringify(p.input || '');
       const entry = { ts, name: p.name || p.type, cmd: extractCmd(p.name, input).slice(0, 400),
-        total: sum.lastTotalTokens, last: sum.lastReqTokens };
+        total: sum.lastTotalTokens, last: sum.lastReqTokens, turn: sum.curTurn || 0 };
       sum.lastExec = { name: entry.name, first: entry.cmd, ts };
       sum.commands.push(entry);
       if (sum.commands.length > 300) sum.commands.shift();
@@ -432,7 +445,7 @@ function buildCommands(sum) {
     if (prev != null && e.total >= prev) delta = e.total - prev;
     if (e.total > 0) prev = e.total;
     out.push({ ts: e.ts, name: e.name, cmd: e.cmd, base: baseCommand(e),
-      total: e.total, last: e.last, delta });
+      total: e.total, last: e.last, delta, turn: e.turn || 0 });
   }
   return out;
 }
@@ -489,6 +502,7 @@ function decorate(sum, full) {
     toolCallCount: sum.toolCallCount,
     turnsStarted: sum.turnsStarted,
     turnsCompleted: sum.turnsCompleted,
+    currentTurn: sum.curTurn || sum.turnsStarted,
     taskActive: sum.taskActive,
     firstUserText: sum.firstUserText,
     lastUserText: sum.lastUserText,
@@ -564,6 +578,204 @@ function timeline(uuid) {
 }
 
 // ---------------------------------------------------------------------------
+// trends — per-session rollups aggregated over day / week / month
+// ---------------------------------------------------------------------------
+const CACHE_FILE = path.join(__dirname, '.cache', 'rollups.json');
+let rollupCache = null;           // { sessions: Map<id, rec> }
+let building = false;
+let rollupReady = false;
+let buildProgress = { done: 0, total: 0 };
+
+function allSessionFiles() {
+  const out = [];
+  for (const date of availableDates()) out.push(...filesForDate(date));
+  for (const f of safeReaddir(ARCHIVED_DIR)) {
+    if (f.endsWith('.jsonl')) out.push(path.join(ARCHIVED_DIR, f));
+  }
+  return out;
+}
+
+const ROLLUP_VERSION = 3;   // bump to force a full re-scan when the parser changes
+function loadRollupCache() {
+  try {
+    const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    if (j.version !== ROLLUP_VERSION) throw new Error('stale');
+    rollupCache = { sessions: new Map(Object.entries(j.sessions || {})) };
+  } catch (_) {
+    rollupCache = { sessions: new Map() };
+  }
+}
+function saveRollupCache() {
+  try {
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({
+      version: ROLLUP_VERSION, sessions: Object.fromEntries(rollupCache.sessions),
+    }));
+  } catch (e) { console.warn('rollup cache save failed:', e.message); }
+}
+
+// Lightweight streaming scan — only JSON.parse lines that can matter.
+function scanSession(file, st) {
+  return new Promise((resolve) => {
+    const rec = {
+      id: fileUuid(file), file, mtime: st.mtimeMs, size: st.size,
+      startedAt: null, prompt: null, project: null, isSubagent: false,
+      totals: { total: 0, input: 0, output: 0, cached: 0, reasoning: 0 },
+      cmds: [],
+    };
+    let lastTotal = 0, firstUser = null;
+    const seq = [];
+    let rl;
+    try {
+      rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+    } catch (_) { return resolve(rec); }
+    rl.on('line', (line) => {
+      if (!line) return;
+      const tok = line.indexOf('"token_count"') !== -1;
+      const tool = line.indexOf('custom_tool_call') !== -1 || line.indexOf('"function_call"') !== -1;
+      const meta = line.indexOf('"session_meta"') !== -1;
+      const user = firstUser === null && line.indexOf('"role":"user"') !== -1;
+      if (!tok && !tool && !meta && !user) return;
+      let o; try { o = JSON.parse(line); } catch (_) { return; }
+      const p = o.payload || {};
+      if (o.type === 'session_meta') {
+        rec.startedAt = p.timestamp || o.timestamp;
+        rec.project = p.cwd ? path.basename(p.cwd) : null;
+        const src = p.source;
+        if (src && typeof src === 'object' && src.subagent) rec.isSubagent = true;
+      } else if (o.type === 'event_msg' && p.type === 'token_count' && p.info && p.info.total_token_usage) {
+        const u = p.info.total_token_usage;
+        lastTotal = u.total_tokens || lastTotal;
+        rec.totals.total = u.total_tokens || rec.totals.total;
+        rec.totals.input = u.input_tokens || rec.totals.input;
+        rec.totals.output = u.output_tokens || rec.totals.output;
+        rec.totals.cached = u.cached_input_tokens || rec.totals.cached;
+        rec.totals.reasoning = u.reasoning_output_tokens || rec.totals.reasoning;
+      } else if (o.type === 'response_item' && (p.type === 'custom_tool_call' || p.type === 'function_call')) {
+        const input = typeof p.input === 'string' ? p.input : JSON.stringify(p.input || '');
+        seq.push({ base: baseCommand({ name: p.name, cmd: extractCmd(p.name, input) }), total: lastTotal });
+      } else if (o.type === 'response_item' && p.type === 'message' && p.role === 'user' && firstUser === null) {
+        const txt = textFromContent(p.content);
+        if (txt && !isTagText(txt)) firstUser = txt.replace(/\s+/g, ' ').trim().slice(0, 240);
+      }
+    });
+    rl.on('close', () => {
+      rec.prompt = firstUser;
+      const agg = new Map();
+      let prev = null;
+      for (const c of seq) {
+        let d = 0;
+        if (prev != null && c.total >= prev) d = c.total - prev;
+        if (c.total > 0) prev = c.total;
+        const g = agg.get(c.base) || { base: c.base, tokens: 0, count: 0 };
+        g.tokens += d; g.count++;
+        agg.set(c.base, g);
+      }
+      rec.cmds = [...agg.values()];
+      resolve(rec);
+    });
+    rl.on('error', () => resolve(rec));
+  });
+}
+
+async function refreshRollups() {
+  if (!rollupCache) loadRollupCache();
+  if (building) return;
+  building = true;
+  try {
+    const files = allSessionFiles();
+    buildProgress = { done: 0, total: files.length };
+    const live = new Set();
+    let changed = 0;
+    for (const f of files) {
+      let st; try { st = fs.statSync(f); } catch (_) { buildProgress.done++; continue; }
+      const id = fileUuid(f);
+      live.add(id);
+      const ex = rollupCache.sessions.get(id);
+      if (!ex || ex.mtime !== st.mtimeMs || ex.size !== st.size) {
+        rollupCache.sessions.set(id, await scanSession(f, st));
+        if (++changed % 100 === 0) console.log(`  rollups: scanned ${changed}/${files.length}…`);
+      }
+      buildProgress.done++;
+    }
+    for (const id of [...rollupCache.sessions.keys()]) if (!live.has(id)) rollupCache.sessions.delete(id);
+    if (changed) { saveRollupCache(); console.log(`  rollups: ${changed} sessions (re)scanned, ${rollupCache.sessions.size} total`); }
+    rollupReady = true;
+  } finally {
+    building = false;
+  }
+}
+
+function ensureRollups() {
+  if (!rollupCache) {
+    loadRollupCache();
+    if (rollupCache.sessions.size) rollupReady = true;   // serve stale immediately
+  }
+  if (!building) refreshRollups();                        // (re)scan in background
+}
+
+function bucketKey(period, iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return 'unknown';
+  const p2 = (n) => String(n).padStart(2, '0');
+  if (period === 'month') return `${d.getFullYear()}-${p2(d.getMonth() + 1)}`;
+  if (period === 'week') {
+    const t = new Date(d);
+    t.setHours(0, 0, 0, 0);
+    t.setDate(t.getDate() - ((t.getDay() + 6) % 7));      // back to Monday
+    return `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}`;
+  }
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+
+function trends(period, includeSub) {
+  const recs = [...rollupCache.sessions.values()]
+    .filter((r) => r.startedAt && (includeSub || !r.isSubagent));
+  const buckets = new Set();
+  const totals = {};
+  const cmdMap = new Map();
+  const promptMap = new Map();
+  for (const r of recs) {
+    const b = bucketKey(period, r.startedAt);
+    buckets.add(b);
+    const T = totals[b] || (totals[b] = { tokens: 0, sessions: 0, commands: 0, input: 0, output: 0, cached: 0, reasoning: 0 });
+    T.tokens += r.totals.total; T.sessions++;
+    T.input += r.totals.input; T.output += r.totals.output;
+    T.cached += r.totals.cached; T.reasoning += r.totals.reasoning;
+    for (const c of r.cmds) {
+      T.commands += c.count;
+      const g = cmdMap.get(c.base) || (cmdMap.set(c.base, { base: c.base, total: 0, count: 0, per: {} }).get(c.base));
+      g.total += c.tokens; g.count += c.count;
+      const pc = g.per[b] || (g.per[b] = { tokens: 0, count: 0 });
+      pc.tokens += c.tokens; pc.count += c.count;
+    }
+    if (r.prompt) {
+      const key = r.prompt.toLowerCase().slice(0, 120);
+      const g = promptMap.get(key) || (promptMap.set(key, { prompt: r.prompt, project: r.project, total: 0, count: 0, per: {} }).get(key));
+      g.total += r.totals.total; g.count += 1;
+      if (!g.project && r.project) g.project = r.project;
+      const pc = g.per[b] || (g.per[b] = { tokens: 0, count: 0 });
+      pc.tokens += r.totals.total; pc.count += 1;
+    }
+  }
+  const grand = Object.values(totals).reduce((a, t) => {
+    for (const k of Object.keys(t)) a[k] = (a[k] || 0) + t[k];
+    return a;
+  }, {});
+  return {
+    period,
+    building: !rollupReady,
+    progress: buildProgress,
+    buckets: [...buckets].sort(),
+    totals,
+    grand,
+    byCommand: [...cmdMap.values()].sort((a, b) => b.total - a.total),
+    byPrompt: [...promptMap.values()].sort((a, b) => b.total - a.total).slice(0, 400),
+    sessions: recs.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // SSE plumbing
 // ---------------------------------------------------------------------------
 const sseClients = new Set();
@@ -628,6 +840,15 @@ const server = http.createServer((req, res) => {
     const t = timeline(uuid);
     if (!t) return json(res, 404, { error: 'not found' });
     return json(res, 200, t);
+  }
+
+  if (pathn === '/api/trends') {
+    ensureRollups();
+    const period = ['day', 'week', 'month'].includes(url.searchParams.get('period'))
+      ? url.searchParams.get('period') : 'day';
+    const includeSub = url.searchParams.get('subagents') === '1';
+    if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
+    return json(res, 200, trends(period, includeSub));
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });

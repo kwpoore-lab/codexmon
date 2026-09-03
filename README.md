@@ -28,10 +28,13 @@ If it can't find one, set `CODEX_HOME` or pass `--root`.
 
 ## What it shows
 
-Refreshed every 2s over Server-Sent Events.
+Three tabs: **Running now**, **History**, **Trends**.
 
-**Running now** — one panel *per active agent* (any session written to in the last 15s, or
-mid-turn). Collapsed by default so many agents fit on one screen; click the ▸ caret to expand.
+### Running now
+
+Refreshed every 2s over Server-Sent Events. One panel *per active agent* (any session written
+to in the last 15s, or mid-turn). Collapsed by default so many agents fit on one screen; click
+the ▸ caret to expand.
 
 Collapsed shows: title, age, active-turn flag, a one-line token/ctx/cmd/turn summary,
 project · model · effort · tier, the latest message, and the **consumption-over-time chart**
@@ -47,12 +50,31 @@ breakdown (total / ctx window / in / cached / out / reasoning), and two tables �
 "% ctx" is the last request's input tokens over the model context window (real occupancy) —
 not the cumulative session total, which far exceeds the window.
 
+Hovering the prompt line (or a card's `$` command line) pops the **full command history for the
+current turn** — every command and follow-up the agent has run since the last `task_started`,
+with per-step token deltas.
+
 **Other live sessions** — compact cards for everything else touched in the last 15 min,
 subagents nested under their parent, dot = 🟢 running / 🟡 idle.
 
-**History** — pick a date; table of every session that day (main + subagents) with the prompt,
-model, token total, command count. Click any row (or card) for the detail panel:
-full message/tool/reasoning timeline, the consumption chart, base-command breakdown, and metadata.
+### History
+
+Pick a date; table of every session that day (main + subagents) with the prompt, model, token
+total, command count. **Click any column header to sort.** Click a row for the detail panel:
+full message/tool/reasoning timeline, the consumption chart, base-command breakdown, metadata.
+
+### Trends
+
+Consumption aggregated over **day / week / month** buckets (toggle top-right; optionally include
+subagents). Shows grand totals, a tokens-per-bucket bar chart, and two independent lists:
+
+- **By base command** — every base command with its all-time token total, run count, and a trend
+  sparkline. Click a row to expand a per-bucket bar chart + table — e.g. how `sed`'s or
+  `apply_patch`'s consumption has moved week to week.
+- **By prompt** — the same, keyed by each session's opening prompt (near-duplicates merged).
+
+Each list has a filter box. Backed by a one-time streaming scan of every session file
+(~40s for ~1000 sessions), cached to `.cache/rollups.json` and refreshed incrementally after.
 
 ## How it works
 
@@ -75,3 +97,4 @@ full message/tool/reasoning timeline, the consumption chart, base-command breakd
 | `GET /api/dates` | available history dates |
 | `GET /api/sessions?date=YYYY-MM-DD` | session summaries for a day |
 | `GET /api/session/:uuid` | full timeline + summary |
+| `GET /api/trends?period=day\|week\|month&subagents=0\|1` | aggregated rollups (`{building:true}` while first scan runs) |
