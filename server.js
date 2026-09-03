@@ -370,12 +370,14 @@ function filesForDate(date) {
 }
 
 function recentFiles(sinceMs) {
-  // scan today + yesterday folders, stat, keep those touched recently
+  // Session folders are dated by UTC; scan today + yesterday in BOTH the
+  // local and UTC calendars so we never miss the current folder near midnight.
   const now = Date.now();
   const dates = new Set();
   for (let i = 0; i < 2; i++) {
     const dt = new Date(now - i * 86400000);
     dates.add(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`);
+    dates.add(`${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`);
   }
   const out = [];
   for (const date of dates) {

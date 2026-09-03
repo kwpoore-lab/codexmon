@@ -143,7 +143,18 @@ function ago(ms) {
   return Math.round(m / 60) + 'h ago';
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
-const hhmmss = (ts) => (ts || '').slice(11, 19);
+// rollout timestamps are UTC ISO strings — render them in the viewer's local time
+const hhmmss = (ts) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return isNaN(d) ? String(ts).slice(11, 19)
+    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+};
+const localDateTime = (ts) => {
+  if (!ts) return '–';
+  const d = new Date(ts);
+  return isNaN(d) ? String(ts) : d.toLocaleString([], { hour12: false });
+};
 
 let lastSnap = null;
 
@@ -444,7 +455,7 @@ async function openDetail(id) {
       <dt>effort / tier</dt><dd>${esc(s.effort || '–')} / ${esc(s.serviceTier || '–')}</dd>
       <dt>client</dt><dd>${esc(s.originator || '–')} · ${esc(s.cliVersion || '')}</dd>
       <dt>kind</dt><dd>${s.isSubagent ? 'subagent depth ' + s.depth : 'main'}</dd>
-      <dt>started</dt><dd>${esc(s.startedAt || '–')}</dd>
+      <dt>started</dt><dd>${esc(localDateTime(s.startedAt))}</dd>
       <dt>tokens</dt><dd>total ${fmt(tk.total_tokens)} · in ${fmt(tk.input_tokens)} · cached ${fmt(tk.cached_input_tokens)} · out ${fmt(tk.output_tokens)} · reason ${fmt(tk.reasoning_output_tokens)}</dd>
       <dt>context window</dt><dd>${fmt(s.contextWindow)}</dd>
       <dt>activity</dt><dd>${s.messageCount} msgs · ${s.toolCallCount} cmds · ${s.turnsCompleted}/${s.turnsStarted} turns</dd>
