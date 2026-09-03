@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codexmon</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #2a3240;
+    --fg: #e6edf3; --dim: #8b98a5; --accent: #58a6ff; --green: #3fb950;
+    --yellow: #d29922; --red: #f85149; --purple: #bc8cff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  header .stat { color: var(--dim); font-size: 12px; }
+  #conn { width: 8px; height: 8px; border-radius: 50%; background: var(--red); display: inline-block; }
+  #conn.ok { background: var(--green); }
+  main { padding: 18px 20px 60px; max-width: 1240px; margin: 0 auto; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim);
+    margin: 26px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h2:first-child { margin-top: 6px; }
+  .badge { font: 11px/1.4 var(--mono); background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; color: var(--dim); white-space: nowrap; }
+  .badge.model { color: var(--accent); border-color: #24406a; }
+  .badge.tier { color: var(--purple); }
+  .badge.review { color: var(--yellow); }
+  .badge.agent { color: var(--purple); border-color: #4a3a6a; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.idle { background: var(--yellow); }
+  .dot.stale { background: var(--dim); }
+
+  /* focus panel — one per active agent */
+  .focus { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--green);
+    border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+  .ftitle { font-size: 16px; font-weight: 600; }
+  .fmeta { color: var(--dim); font-size: 12px; margin: 3px 0 8px; }
+  .fpath { font-family: var(--mono); font-size: 11px; color: var(--dim); word-break: break-all; }
+  .prompt { margin: 10px 0; padding: 9px 11px; background: var(--panel2); border-radius: 6px;
+    border-left: 2px solid var(--accent); }
+  .prompt .lbl { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .6px; }
+  .prompt p { margin: 3px 0 0; white-space: pre-wrap; max-height: 130px; overflow: auto; }
+  .statline { display: flex; gap: 16px; flex-wrap: wrap; font: 12px/1.5 var(--mono); color: var(--dim);
+    margin: 8px 0; }
+  .statline b { color: var(--fg); font-weight: 600; }
+  .chartwrap { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px 4px; margin: 8px 0; }
+  .chart { width: 100%; height: 230px; display: block; }
+  .chart text { fill: var(--dim); font: 10px var(--mono); }
+  .cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; margin-top: 12px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+  .subh { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); margin: 0 0 6px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--border); font-size: 12.5px;
+    vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+  tr:hover td { background: var(--panel); }
+  .num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+  td.cmd { font-family: var(--mono); font-size: 11px; word-break: break-all; }
+  td.base { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .cmdscroll { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px;
+    cursor: pointer; }
+  .card.sub { border-left: 3px solid var(--purple); margin-left: 16px; background: var(--panel2); }
+  .card.running { border-left: 3px solid var(--green); }
+  .card.idle { border-left: 3px solid var(--yellow); }
+  .card.stale { opacity: .6; }
+  .card .title { font-weight: 600; }
+  .card .meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .bar { height: 5px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin: 7px 0 3px; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--purple)); }
+  .tok { display: flex; gap: 10px; font: 11px/1.4 var(--mono); color: var(--dim); flex-wrap: wrap; }
+  .empty { color: var(--dim); padding: 16px 0; }
+  select { background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 5px 8px; font: inherit; }
+
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; z-index: 20; }
+  #overlay.on { display: block; }
+  #detail { position: absolute; right: 0; top: 0; bottom: 0; width: min(780px, 94vw);
+    background: var(--bg); border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 22px; }
+  .close { position: absolute; right: 16px; top: 12px; cursor: pointer; color: var(--dim); font-size: 22px; }
+  .ev { border-left: 2px solid var(--border); padding: 5px 0 5px 12px; margin: 4px 0; }
+  .ev .et { font: 10px/1.4 var(--mono); color: var(--dim); }
+  .ev.user { border-color: var(--accent); } .ev.assistant { border-color: var(--green); }
+  .ev.tool { border-color: var(--purple); } .ev.reasoning { border-color: var(--yellow); }
+  .ev pre { margin: 3px 0 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono);
+    font-size: 11.5px; background: var(--panel); padding: 7px 9px; border-radius: 4px;
+    max-height: 260px; overflow: auto; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 3px 10px; font-size: 12px; margin: 10px 0; }
+  .kv dt { color: var(--dim); } .kv dd { margin: 0; font-family: var(--mono); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>codexmon</h1>
+  <span id="conn"></span>
+  <span class="stat" id="hdrstat">connecting…</span>
+</header>
+<main>
+  <h2>Running now</h2>
+  <div id="running"><div class="empty">Waiting for activity…</div></div>
+
+  <h2>Other live sessions</h2>
+  <div id="live" class="grid"></div>
+
+  <h2>History <select id="dateSel" style="float:right; margin-top:-4px"></select></h2>
+  <div id="hist"><div class="empty">Select a date.</div></div>
+</main>
+
+<div id="overlay"><div id="detail"><span class="close" onclick="closeDetail()">×</span><div id="detailBody"></div></div></div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const fmt = (n) => (n == null || isNaN(n)) ? '–' : Math.round(n).toLocaleString();
+const short = (s, n = 120) => !s ? '' : (s.length > n ? s.slice(0, n) + '…' : s);
+function ago(ms) {
+  if (ms == null) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  return Math.round(m / 60) + 'h ago';
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+const hhmmss = (ts) => (ts || '').slice(11, 19);
+
+let lastSnap = null;
+
+// ---------------------------------------------------------------------------
+// SSE
+// ---------------------------------------------------------------------------
+function connect() {
+  const es = new EventSource('/events');
+  es.onopen = () => $('#conn').classList.add('ok');
+  es.onerror = () => { $('#conn').classList.remove('ok'); $('#hdrstat').textContent = 'reconnecting…'; };
+  es.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) {} };
+}
+
+function render(snap) {
+  lastSnap = snap;
+  $('#conn').classList.add('ok');
+  const threads = snap.threads || [];
+  const running = threads.filter(t => t.status === 'running');
+  $('#hdrstat').textContent =
+    `${threads.length} live · ${running.length} running · updated ${new Date(snap.now).toLocaleTimeString()}`;
+
+  renderRunning(threads, running);
+  renderLiveGrid(threads);
+}
+
+// ---------------------------------------------------------------------------
+// Running-now focus panel
+// ---------------------------------------------------------------------------
+let runningIds = [];   // ids shown in the running section (excluded from the grid)
+
+function renderRunning(threads, running) {
+  const el = $('#running');
+  // one panel per active agent: everything running or mid-turn, plus most-recent idle if nothing else
+  let cands = threads.filter(t => t.status === 'running' || t.taskActive)
+    .sort((a, b) => b.mtime - a.mtime);
+  if (!cands.length) {
+    const idle = threads.filter(t => t.status === 'idle').sort((a, b) => b.mtime - a.mtime);
+    if (idle.length) cands = [idle[0]];
+  }
+  runningIds = cands.map(t => t.id);
+  if (!cands.length) {
+    el.innerHTML = '<div class="empty">No session is currently running.</div>';
+    return;
+  }
+  el.innerHTML = cands.map(focusBlock).join('');
+}
+
+function focusBlock(t) {
+  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
+  const badges = [];
+  if (t.primaryModel) badges.push(`<span class="badge model">${esc(t.primaryModel)}</span>`);
+  if (t.effort) badges.push(`<span class="badge">effort:${esc(t.effort)}</span>`);
+  if (t.serviceTier) badges.push(`<span class="badge tier">${esc(t.serviceTier)}</span>`);
+  if (t.autoReview) badges.push(`<span class="badge review">auto-review</span>`);
+  if (t.agentNickname) badges.push(`<span class="badge agent">↳ ${esc(t.agentNickname)} d${t.depth}</span>`);
+  if (t.originator) badges.push(`<span class="badge">${esc(t.originator)}</span>`);
+
+  const tk = t.tokens || {};
+  const pct = t.contextWindow && tk.total_tokens ? Math.min(100, 100 * tk.total_tokens / t.contextWindow) : 0;
+  const proj = t.git ? `${esc(t.git.repo || t.project)} @ ${esc(t.git.branch)}` : esc(t.project || '');
+
+  const prompt = t.firstUserText
+    ? `<div class="prompt"><span class="lbl">session prompt</span><p>${esc(t.firstUserText)}</p></div>` : '';
+  const latest = (t.lastUserText && t.lastUserText !== t.firstUserText)
+    ? `<div class="prompt"><span class="lbl">latest message</span><p>${esc(t.lastUserText)}</p></div>` : '';
+
+  const cmds = (t.commands || []).slice().reverse();      // latest first
+  const stats = t.commandStats || [];
+
+  return `
+    <div class="focus">
+      <div class="row"><span class="dot ${t.status}"></span>
+        <span class="ftitle">${esc(name)}</span>
+        <span class="badge">${ago(t.ageMs)}</span>
+        ${t.taskActive ? '<span class="badge" style="color:var(--green)">● active turn</span>' : ''}
+        <a href="#" onclick="openDetail('${t.id}');return false" style="margin-left:auto;font-size:12px">full timeline →</a>
+      </div>
+      <div class="fmeta">${proj}</div>
+      <div class="fpath">${esc(t.cwd || '')}</div>
+      <div class="row" style="margin-top:6px">${badges.join(' ')}</div>
+      ${prompt}${latest}
+      <div class="statline">
+        <span><b>${fmt(tk.total_tokens)}</b> total tokens</span>
+        <span><b>${fmt(t.contextWindow)}</b> ctx window (${pct.toFixed(0)}% full)</span>
+        <span>in <b>${fmt(tk.input_tokens)}</b></span>
+        <span>cached <b>${fmt(tk.cached_input_tokens)}</b></span>
+        <span>out <b>${fmt(tk.output_tokens)}</b></span>
+        <span>reasoning <b>${fmt(tk.reasoning_output_tokens)}</b></span>
+        <span><b>${t.toolCallCount}</b> cmds</span>
+        <span><b>${t.turnsCompleted}/${t.turnsStarted}</b> turns</span>
+      </div>
+      <div class="chartwrap">${consumptionChart(t.tokenSeries)}</div>
+      <div class="cols">
+        <div>
+          <p class="subh">Commands — latest first (Δ tokens ≈ consumed after that step)</p>
+          <div class="cmdscroll"><table><thead><tr>
+            <th>Time</th><th>Command</th><th class="num">Δ tok</th><th class="num">Total</th></tr></thead>
+            <tbody>${cmds.length ? cmds.map(c => `<tr>
+              <td class="num">${hhmmss(c.ts)}</td>
+              <td class="cmd" title="${esc(c.cmd)}">${esc(short(c.cmd, 140))}</td>
+              <td class="num">${c.delta ? '+' + fmt(c.delta) : '·'}</td>
+              <td class="num">${fmt(c.total)}</td></tr>`).join('')
+              : '<tr><td colspan="4" class="empty">No commands yet.</td></tr>'}
+            </tbody></table></div>
+        </div>
+        <div>
+          <p class="subh">Consumption by base command (params ignored)</p>
+          <table><thead><tr>
+            <th>Base</th><th class="num">Runs</th><th class="num">Δ tokens</th><th class="num">Last</th></tr></thead>
+            <tbody>${stats.length ? stats.map(g => `<tr>
+              <td class="base">${esc(g.base)}</td>
+              <td class="num">${g.count}</td>
+              <td class="num">${fmt(g.tokens)}</td>
+              <td class="num">${hhmmss(g.lastTs)}</td></tr>`).join('')
+              : '<tr><td colspan="4" class="empty">–</td></tr>'}
+            </tbody></table>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// consumption chart: cumulative total (area) + per-turn tokens (bars)
+// ---------------------------------------------------------------------------
+function consumptionChart(series) {
+  if (!series || series.length < 2)
+    return '<svg class="chart" viewBox="0 0 800 230"><text x="12" y="24">Not enough data yet…</text></svg>';
+  const W = 800, H = 230, PL = 58, PR = 12, PT = 12, PB = 22;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const times = series.map(p => Date.parse(p.t) || 0);
+  const t0 = times[0], t1 = times[times.length - 1] || t0 + 1;
+  const span = (t1 - t0) || 1;
+  const x = (t) => PL + ((t - t0) / span) * iw;
+
+  const totMax = Math.max(...series.map(p => p.total)) || 1;
+  const yT = (v) => PT + ih - (v / totMax) * ih;
+  const lastMax = Math.max(...series.map(p => p.last || 0)) || 1;
+
+  // area path for cumulative
+  let d = `M ${x(times[0]).toFixed(1)} ${yT(series[0].total).toFixed(1)}`;
+  series.forEach((p, i) => { d += ` L ${x(times[i]).toFixed(1)} ${yT(p.total).toFixed(1)}`; });
+  const area = d + ` L ${x(times[times.length - 1]).toFixed(1)} ${(PT + ih).toFixed(1)} L ${x(times[0]).toFixed(1)} ${(PT + ih).toFixed(1)} Z`;
+
+  // per-turn bars (own scale, faint)
+  const bw = Math.max(1, iw / series.length * 0.6);
+  const bars = series.map((p, i) => {
+    if (!p.last) return '';
+    const bh = (p.last / lastMax) * ih * 0.55;
+    return `<rect x="${(x(times[i]) - bw / 2).toFixed(1)}" y="${(PT + ih - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--purple)" opacity="0.28"/>`;
+  }).join('');
+
+  // gridlines + y labels (cumulative)
+  let grid = '';
+  for (let g = 0; g <= 4; g++) {
+    const v = totMax * g / 4, yy = yT(v);
+    grid += `<line x1="${PL}" y1="${yy.toFixed(1)}" x2="${W - PR}" y2="${yy.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`;
+    grid += `<text x="${PL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end">${kfmt(v)}</text>`;
+  }
+  const tlabel = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${grid}${bars}
+    <path d="${area}" fill="var(--accent)" opacity="0.16"/>
+    <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+    <text x="${PL}" y="${H - 6}">${tlabel(t0)}</text>
+    <text x="${W - PR}" y="${H - 6}" text-anchor="end">${tlabel(t1)}</text>
+    <text x="${PL + iw / 2}" y="${H - 6}" text-anchor="middle">cumulative tokens (line/area) · per-turn tokens (bars)</text>
+  </svg>`;
+}
+function kfmt(v) {
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + 'k';
+  return Math.round(v);
+}
+
+// ---------------------------------------------------------------------------
+// Other live sessions grid
+// ---------------------------------------------------------------------------
+function renderLiveGrid(threads) {
+  const rest = threads.filter(t => !runningIds.includes(t.id));
+  const el = $('#live');
+  if (!rest.length) { el.innerHTML = '<div class="empty">Nothing else active in the last 15 minutes.</div>'; return; }
+  const byId = Object.fromEntries(threads.map(t => [t.id, t]));
+  const kids = {}, roots = [];
+  for (const t of rest) {
+    if (t.parentId && byId[t.parentId]) (kids[t.parentId] = kids[t.parentId] || []).push(t);
+    else roots.push(t);
+  }
+  roots.sort((a, b) => b.mtime - a.mtime);
+  const ordered = [];
+  for (const r of roots) {
+    ordered.push(r);
+    for (const k of (kids[r.id] || []).sort((a, b) => b.mtime - a.mtime)) ordered.push(k);
+  }
+  el.innerHTML = ordered.map(miniCard).join('');
+}
+
+function miniCard(t) {
+  const cls = ['card', t.status];
+  if (t.isSubagent) cls.push('sub');
+  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
+  const tk = t.tokens || {};
+  const pct = t.contextWindow && tk.total_tokens ? Math.min(100, 100 * tk.total_tokens / t.contextWindow) : 0;
+  const proj = t.git ? `${esc(t.git.repo || t.project)} @ ${esc(t.git.branch)}` : esc(t.project || '');
+  const badges = [];
+  if (t.primaryModel) badges.push(`<span class="badge model">${esc(t.primaryModel)}</span>`);
+  if (t.effort) badges.push(`<span class="badge">effort:${esc(t.effort)}</span>`);
+  if (t.agentNickname) badges.push(`<span class="badge agent">↳ ${esc(t.agentNickname)}</span>`);
+  return `<div class="${cls.join(' ')}" onclick="openDetail('${t.id}')">
+    <div class="row"><span class="dot ${t.status}"></span><span class="title">${esc(name)}</span>
+      <span class="badge">${ago(t.ageMs)}</span></div>
+    <div class="meta">${proj}</div>
+    <div class="row" style="margin-top:5px">${badges.join(' ')}</div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="tok"><span>total ${fmt(tk.total_tokens)}</span><span>${t.toolCallCount} cmds</span>
+      <span>${t.messageCount} msgs</span></div>
+    ${t.lastExec ? `<div class="tok" style="margin-top:4px;color:var(--green)">$ ${esc(short(t.lastExec.first, 90))}</div>` : ''}
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+async function loadDates() {
+  const r = await fetch('/api/dates').then(x => x.json());
+  const sel = $('#dateSel');
+  sel.innerHTML = r.dates.map(d => `<option value="${d}">${d}</option>`).join('');
+  if (r.dates.length) { sel.value = r.dates[0]; loadHistory(r.dates[0]); }
+  sel.onchange = () => loadHistory(sel.value);
+}
+async function loadHistory(date) {
+  $('#hist').innerHTML = '<div class="empty">Loading…</div>';
+  const r = await fetch('/api/sessions?date=' + date).then(x => x.json());
+  const rows = (r.threads || []).sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
+  if (!rows.length) { $('#hist').innerHTML = '<div class="empty">No sessions.</div>'; return; }
+  $('#hist').innerHTML = `<table><thead><tr>
+    <th>Started</th><th>Thread</th><th>Prompt</th><th>Project</th><th>Model</th><th>Kind</th>
+    <th class="num">Tokens</th><th class="num">Cmds</th></tr></thead><tbody>
+    ${rows.map(t => {
+      const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
+      const kind = t.isSubagent ? `subagent${t.agentNickname ? ' · ' + esc(t.agentNickname) : ''}` : 'main';
+      const models = [t.primaryModel, t.autoReview ? '+review' : null].filter(Boolean).join(' ');
+      return `<tr onclick="openDetail('${t.id}')" style="cursor:pointer">
+        <td class="num">${hhmmss(t.startedAt)}</td>
+        <td>${esc(name)}</td>
+        <td style="max-width:280px;color:var(--dim)">${esc(short(t.firstUserText, 100))}</td>
+        <td>${esc(t.git ? t.git.repo || t.project : t.project || '')}${t.git ? ' @ ' + esc(t.git.branch) : ''}</td>
+        <td>${esc(models || '–')}</td>
+        <td>${kind}</td>
+        <td class="num">${fmt(t.tokens && t.tokens.total_tokens)}</td>
+        <td class="num">${t.toolCallCount}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>`;
+}
+
+// ---------------------------------------------------------------------------
+// detail overlay
+// ---------------------------------------------------------------------------
+async function openDetail(id) {
+  $('#overlay').classList.add('on');
+  $('#detailBody').innerHTML = '<div class="empty">Loading…</div>';
+  const r = await fetch('/api/session/' + encodeURIComponent(id)).then(x => x.json());
+  if (r.error) { $('#detailBody').innerHTML = '<div class="empty">' + r.error + '</div>'; return; }
+  const s = r.summary, tk = s.tokens || {};
+  const name = s.title || (s.agentNickname ? 'agent ' + s.agentNickname : s.id.slice(0, 8));
+  const stats = s.commandStats || [];
+  $('#detailBody').innerHTML = `
+    <h3 style="margin:0 0 4px">${esc(name)}</h3>
+    <div class="fpath">${esc(s.id)}</div>
+    ${s.firstUserText ? `<div class="prompt"><span class="lbl">session prompt</span><p>${esc(s.firstUserText)}</p></div>` : ''}
+    <dl class="kv">
+      <dt>project</dt><dd>${esc(s.cwd || '–')}</dd>
+      <dt>git</dt><dd>${s.git ? esc((s.git.repo || '') + ' @ ' + s.git.branch + ' (' + s.git.commit + ')') : '–'}</dd>
+      <dt>model</dt><dd>${esc(s.primaryModel || '–')}${s.autoReview ? ' + auto-review' : ''}</dd>
+      <dt>effort / tier</dt><dd>${esc(s.effort || '–')} / ${esc(s.serviceTier || '–')}</dd>
+      <dt>client</dt><dd>${esc(s.originator || '–')} · ${esc(s.cliVersion || '')}</dd>
+      <dt>kind</dt><dd>${s.isSubagent ? 'subagent depth ' + s.depth : 'main'}</dd>
+      <dt>started</dt><dd>${esc(s.startedAt || '–')}</dd>
+      <dt>tokens</dt><dd>total ${fmt(tk.total_tokens)} · in ${fmt(tk.input_tokens)} · cached ${fmt(tk.cached_input_tokens)} · out ${fmt(tk.output_tokens)} · reason ${fmt(tk.reasoning_output_tokens)}</dd>
+      <dt>context window</dt><dd>${fmt(s.contextWindow)}</dd>
+      <dt>activity</dt><dd>${s.messageCount} msgs · ${s.toolCallCount} cmds · ${s.turnsCompleted}/${s.turnsStarted} turns</dd>
+    </dl>
+    <div class="chartwrap">${consumptionChart(s.tokenSeries)}</div>
+    ${stats.length ? `<p class="subh">Consumption by base command</p>
+      <table><thead><tr><th>Base</th><th class="num">Runs</th><th class="num">Δ tokens</th></tr></thead>
+      <tbody>${stats.map(g => `<tr><td class="base">${esc(g.base)}</td><td class="num">${g.count}</td><td class="num">${fmt(g.tokens)}</td></tr>`).join('')}</tbody></table>` : ''}
+    <h2 style="border:0">Timeline (${r.events.length})</h2>
+    ${r.events.map(evRow).join('')}`;
+}
+function evRow(e) {
+  const t = hhmmss(e.ts);
+  if (e.kind === 'message') return `<div class="ev ${e.role}"><div class="et">${t} · ${e.role}</div><pre>${esc(e.text)}</pre></div>`;
+  if (e.kind === 'tool') return `<div class="ev tool"><div class="et">${t} · tool ${esc(e.name)}</div><pre>${esc(e.input)}</pre></div>`;
+  if (e.kind === 'reasoning') return `<div class="ev reasoning"><div class="et">${t} · reasoning</div><pre>${esc(e.text)}</pre></div>`;
+  if (e.kind === 'tokens') return `<div class="ev"><div class="et">${t} · tokens → ${fmt(e.total)}</div></div>`;
+  return `<div class="ev"><div class="et">${t} · ${esc(e.kind)}</div></div>`;
+}
+function closeDetail() { $('#overlay').classList.remove('on'); }
+$('#overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeDetail(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+
+connect();
+loadDates();
+setInterval(() => {
+  const s = $('#dateSel');
+  if (s && s.value === s.options[0]?.value) loadHistory(s.value);
+}, 30000);
+</script>
+</body>
+</html>
