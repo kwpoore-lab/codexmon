@@ -163,6 +163,26 @@ function toolInput(p) {
 
 // Codex tool inputs are usually JS snippets calling tools.exec_command({...}).
 // Dig out the actual shell command; fall back to something readable.
+// strip shell wrappers that bury the real command: (cd … &&), leading env
+// assignments (VAR=val, possibly with `env` and possibly repeated), bash -lc '…'
+function cleanCmd(s) {
+  if (!s) return s;
+  const orig = s.trim();
+  let t = orig;
+  const hadParen = /^\(/.test(t);
+  t = t.replace(/^\(\s*/, '');
+  t = t.replace(/^cd\s+\S+\s*&&\s*/, '');
+  let prev;
+  do {                                   // peel `env`? VAR=val prefixes one at a time
+    prev = t;
+    t = t.replace(/^(?:env\s+)?[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+/, '');
+  } while (t !== prev);
+  t = t.replace(/^env\s+/, '');
+  t = t.replace(/^(?:bash|sh|zsh)\s+-[a-z]*c\s+['"]?/, '').trim();
+  if (hadParen) t = t.replace(/\)[\s;]*$/, '').trim();
+  return t || orig;
+}
+
 const EXEC_TOOLS = new Set(['exec', 'shell', 'local_shell', 'container.exec']);
 function extractCmd(name, input) {
   if (!input) return name || '';
@@ -171,25 +191,25 @@ function extractCmd(name, input) {
   if (name && !EXEC_TOOLS.has(name) && !/["']?(?:cmd|command)["']?\s*:/.test(input)) return name;
   // cmd: "…"  or  "cmd": "…"
   let m = input.match(/["']?cmd["']?\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  if (m) return unesc(m[1]);
+  if (m) return cleanCmd(unesc(m[1]));
   // cmd: `…` (template literal)
   m = input.match(/["']?cmd["']?\s*:\s*`([^`]*)`/);
-  if (m) return unesc(m[1]);
+  if (m) return cleanCmd(unesc(m[1]));
   // cmd: ["bash","-lc","…"]  or  ["git","status"]
   m = input.match(/["']?cmd["']?\s*:\s*\[([^\]]*)\]/);
   if (m) {
     const parts = [...m[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => unesc(x[1]));
     if (parts.length) {
-      if (/^(?:bash|sh|zsh)$/.test(parts[0]) && /^-[a-z]*c$/.test(parts[1] || '') && parts[2]) return parts[2];
-      return parts.join(' ');
+      if (/^(?:bash|sh|zsh)$/.test(parts[0]) && /^-[a-z]*c$/.test(parts[1] || '') && parts[2]) return cleanCmd(parts[2]);
+      return cleanCmd(parts.join(' '));
     }
   }
   // cmd: '…' (single-quoted)
   m = input.match(/["']?cmd["']?\s*:\s*'((?:[^'\\]|\\.)*)'/);
-  if (m) return unesc(m[1]);
+  if (m) return cleanCmd(unesc(m[1]));
   // command: "…" (some tools)
   m = input.match(/["']?command["']?\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  if (m) return unesc(m[1]);
+  if (m) return cleanCmd(unesc(m[1]));
   // Codex tool call: `const r = await tools.<toolname>({...})`
   m = input.match(/tools\.([A-Za-z0-9_]+)\s*\(/);
   if (m) return m[1];
@@ -198,7 +218,7 @@ function extractCmd(name, input) {
   // last resort: first non-empty, non-boilerplate line
   const line = input.split('\n').map((l) => l.trim())
     .find((l) => l && !/^(const|let|var|await|tools\.|text\(|return|\}|\/\/)/.test(l));
-  return line || input.split('\n')[0].trim();
+  return cleanCmd(line || input.split('\n')[0].trim());
 }
 
 function textFromContent(content) {
@@ -690,7 +710,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 13;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 14;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
