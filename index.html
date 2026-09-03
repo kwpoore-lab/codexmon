@@ -162,8 +162,10 @@
   .bc-title .bc-l2 { color: var(--purple); }
   .bc-body { display: flex; gap: 6px; }
   .bc-yax { display: flex; flex-direction: column; justify-content: space-between; width: 46px;
-    height: 150px; font: 10px/1 var(--mono); color: var(--dim); text-align: right; }
-  .bc-plot { position: relative; flex: 1; display: flex; align-items: flex-end;
+    height: 150px; font: 10px/1 var(--mono); color: var(--dim); text-align: right; flex: none; }
+  .bc-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+  .bc-inner { min-width: 100%; }
+  .bc-plot { position: relative; display: flex; align-items: flex-end;
     justify-content: space-between; height: 150px; border-bottom: 1px solid var(--border);
     background: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--border) calc(25% - 1px), var(--border) 25%); }
   .bc-bar { flex: 0 0 auto; min-height: 1px; background: var(--accent); opacity: .8; border-radius: 1px 1px 0 0; }
@@ -171,7 +173,7 @@
   .bc-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .bc-line polyline { fill: none; stroke: var(--purple); stroke-width: 1.4; opacity: .5;
     vector-effect: non-scaling-stroke; }
-  .bc-xax { display: flex; justify-content: space-between; margin: 3px 0 0 52px;
+  .bc-xax { display: flex; justify-content: space-between; margin-top: 3px;
     font: 9.5px/1 var(--mono); color: var(--dim); }
   .bc-xax span { flex: 0 0 auto; white-space: nowrap; text-align: center; overflow: visible; }
   .ct-ctrls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
@@ -235,7 +237,7 @@
     <h2>History
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
         <span class="seg" id="histSeg">
-          <button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+          <button data-p="hour">Hour</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
         </span>
         <select id="periodSel" style="margin-left:10px"></select>
         <label style="margin-left:12px;font-size:12px;color:var(--dim)">
@@ -249,7 +251,7 @@
     <h2>Trends
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
         <span class="seg" id="periodSeg">
-          <button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+          <button data-p="hour">Hour</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
         </span>
         <label style="margin-left:12px;font-size:12px;color:var(--dim)">
           <input type="checkbox" id="subToggle"> include subagents</label>
@@ -713,7 +715,9 @@ function histBucketKey(iso) {
     t.setDate(t.getDate() - ((t.getDay() + 6) % 7));
     return `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}`;
   }
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  const ymd = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  if (histPeriod === 'hour') return `${ymd}T${p2(d.getHours())}`;
+  return ymd;
 }
 function histBucketLabel(k) {
   if (histPeriod === 'month') {
@@ -721,6 +725,7 @@ function histBucketLabel(k) {
     return new Date(y, m - 1, 1).toLocaleDateString([], { year: 'numeric', month: 'long' });
   }
   if (histPeriod === 'week') return 'Week of ' + new Date(k + 'T00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  if (histPeriod === 'hour') return new Date(k + ':00').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', hour12: false }) + ':00';
   return new Date(k + 'T00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
@@ -948,8 +953,10 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
   const vals = buckets.map(valueFn);
   const max = Math.max(...vals, 1);
   const n = buckets.length;
-  const bw = Math.min(13, Math.max(3, Math.round(680 / n)));   // px per bar; gaps fill the rest
-  const step = Math.max(1, Math.ceil(n / 14));
+  const bw = Math.min(13, Math.max(3, Math.round(720 / n)));   // bar width px
+  const slot = Math.max(bw + 2, 6);                            // bar + gap
+  const scrollW = n * slot > 960 ? n * slot : 0;               // 0 = fit, else scroll
+  const step = Math.max(1, Math.ceil(n / Math.floor((scrollW || 960) / 66)));
   let lineSvg = '';
   const line = opts.line;
   if (line && line.length === n && line.some(v => v)) {
@@ -958,16 +965,19 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
     const pts = line.map((v, i) => `${(i / d * 100).toFixed(2)},${(96 - v / lmax * 92).toFixed(2)}`).join(' ');
     lineSvg = `<svg class="bc-line" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;
   }
+  const lbl = (b) => b.length > 7 ? b.slice(5) : b;
   return `<div class="bchart">
-    ${label ? `<div class="bc-title">${esc(label)}${opts.lineLabel ? ` · <span class="bc-l2">${esc(opts.lineLabel)} (line)</span>` : ''}</div>` : ''}
+    ${label ? `<div class="bc-title">${esc(label)}${opts.lineLabel ? ` · <span class="bc-l2">${esc(opts.lineLabel)} (line)</span>` : ''}${scrollW ? ' · scroll →' : ''}</div>` : ''}
     <div class="bc-body">
       <div class="bc-yax">${[1, 0.75, 0.5, 0.25, 0].map(f => `<span>${kfmt(max * f)}</span>`).join('')}</div>
-      <div class="bc-plot">
-        ${vals.map((v, i) => `<div class="bc-bar" style="width:${bw}px;height:${(v / max * 100).toFixed(1)}%" title="${esc(buckets[i])} — ${fmt(v)}"></div>`).join('')}
-        ${lineSvg}
-      </div>
+      <div class="bc-scroll"><div class="bc-inner"${scrollW ? ` style="min-width:${scrollW}px"` : ''}>
+        <div class="bc-plot">
+          ${vals.map((v, i) => `<div class="bc-bar" style="width:${bw}px;height:${(v / max * 100).toFixed(1)}%" title="${esc(buckets[i])} — ${fmt(v)}"></div>`).join('')}
+          ${lineSvg}
+        </div>
+        <div class="bc-xax">${buckets.map((b, i) => `<span style="width:${bw}px">${i % step === 0 ? esc(lbl(b)) : ''}</span>`).join('')}</div>
+      </div></div>
     </div>
-    <div class="bc-xax">${buckets.map((b, i) => `<span style="width:${bw}px">${i % step === 0 ? esc(b.length > 7 ? b.slice(5) : b) : ''}</span>`).join('')}</div>
   </div>`;
 }
 
@@ -1008,12 +1018,13 @@ function renderTrends() {
 let trendCmdRows = [], trendPromptRows = [];
 
 function trendDetailRows(r, B) {
+  const T = B.length > 96 ? B.slice(-96) : B;
   return `<tr class="trow-detail"><td colspan="4">
     ${tbarChart(B, b => (r.per[b] && r.per[b].tokens) || 0, 'tokens per ' + trendPeriod)}
     <div style="overflow-x:auto"><table><tbody>
-      <tr class="lbl-row"><td>${trendPeriod}</td>${B.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
-      <tr><td class="num">tok</td>${B.map(b => `<td class="num">${kfmt((r.per[b] && r.per[b].tokens) || 0)}</td>`).join('')}</tr>
-      <tr><td class="num">runs</td>${B.map(b => `<td class="num">${(r.per[b] && r.per[b].count) || 0}</td>`).join('')}</tr>
+      <tr class="lbl-row"><td>${trendPeriod}${T !== B ? ' (last 96)' : ''}</td>${T.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
+      <tr><td class="num">tok</td>${T.map(b => `<td class="num">${kfmt((r.per[b] && r.per[b].tokens) || 0)}</td>`).join('')}</tr>
+      <tr><td class="num">runs</td>${T.map(b => `<td class="num">${(r.per[b] && r.per[b].count) || 0}</td>`).join('')}</tr>
     </tbody></table></div></td></tr>`;
 }
 
@@ -1160,7 +1171,7 @@ function ctPanel(base) {
   const seg = (name, cur, opts) => `<span class="seg" data-ct-seg="${name}">${opts.map(o =>
     `<button data-ct-${name}="${o.k}" class="${o.k === cur ? 'on' : ''}">${esc(o.label)}</button>`).join('')}</span>`;
   const ctrls = `<div class="ct-ctrls" data-ct-base="${esc(base)}">
-    ${seg('period', s.period, [{ k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
+    ${seg('period', s.period, [{ k: 'hour', label: 'Hour' }, { k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
     ${seg('metric', s.metric, CT_METRICS)}
     <label style="font-size:11px;color:var(--dim)"><input type="checkbox" data-ct-sub ${s.sub ? 'checked' : ''}> subagents</label>
   </div>`;
@@ -1197,12 +1208,13 @@ function ctPanel(base) {
       <td class="num">${fmt(r.out)}</td>
       <td class="trend-cell">${tspark(r.per, B, rpf)}</td></tr>`;
     if (o) {
+      const T = B.length > 96 ? B.slice(-96) : B;
       h += `<tr class="trow-detail"><td colspan="4">
         ${tbarChart(B, b => (rpf(r.per[b], b) || 0), esc(short(r.cmd, 90)) + ' — ' + rowLabel.toLowerCase() + ' per ' + s.period)}
         <div style="overflow-x:auto"><table><tbody>
-          <tr class="lbl-row"><td>${s.period}</td>${B.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
-          <tr><td class="num">${esc(rowLabel)}</td>${B.map(b => `<td class="num">${kfmt(rpf(r.per[b], b) || 0)}</td>`).join('')}</tr>
-          <tr><td class="num">runs</td>${B.map(b => `<td class="num">${(r.per[b] && r.per[b].calls) || 0}</td>`).join('')}</tr>
+          <tr class="lbl-row"><td>${s.period}${T !== B ? ' (last 96)' : ''}</td>${T.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
+          <tr><td class="num">${esc(rowLabel)}</td>${T.map(b => `<td class="num">${kfmt(rpf(r.per[b], b) || 0)}</td>`).join('')}</tr>
+          <tr><td class="num">runs</td>${T.map(b => `<td class="num">${(r.per[b] && r.per[b].calls) || 0}</td>`).join('')}</tr>
         </tbody></table></div></td></tr>`;
     }
     return h;

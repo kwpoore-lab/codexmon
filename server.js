@@ -944,14 +944,16 @@ function bucketKey(period, iso) {
   const d = new Date(iso);
   if (isNaN(d)) return 'unknown';
   const p2 = (n) => String(n).padStart(2, '0');
-  if (period === 'month') return `${d.getFullYear()}-${p2(d.getMonth() + 1)}`;
+  const ymd = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  if (period === 'month') return ymd.slice(0, 7);
   if (period === 'week') {
     const t = new Date(d);
     t.setHours(0, 0, 0, 0);
     t.setDate(t.getDate() - ((t.getDay() + 6) % 7));      // back to Monday
     return `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}`;
   }
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  if (period === 'hour') return `${ymd}T${p2(d.getHours())}`;
+  return ymd;
 }
 
 function trends(period, includeSub) {
@@ -1195,7 +1197,7 @@ const server = http.createServer((req, res) => {
 
   if (pathn === '/api/trends') {
     ensureRollups();
-    const period = ['day', 'week', 'month'].includes(url.searchParams.get('period'))
+    const period = ['hour', 'day', 'week', 'month'].includes(url.searchParams.get('period'))
       ? url.searchParams.get('period') : 'day';
     const includeSub = url.searchParams.get('subagents') === '1';
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
@@ -1240,7 +1242,7 @@ const server = http.createServer((req, res) => {
   if (pathn === '/api/command') {
     ensureRollups();
     const base = url.searchParams.get('base');
-    const period = ['day', 'week', 'month'].includes(url.searchParams.get('period'))
+    const period = ['hour', 'day', 'week', 'month'].includes(url.searchParams.get('period'))
       ? url.searchParams.get('period') : 'week';
     const includeSub = url.searchParams.get('subagents') !== '0';
     if (!base) return json(res, 400, { error: 'base required' });
