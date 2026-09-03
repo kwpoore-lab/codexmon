@@ -178,6 +178,7 @@
   .bc-xax span { flex: 0 0 auto; white-space: nowrap; text-align: center; overflow: visible; }
   .ct-ctrls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
   .ct-ctrls .seg button { padding: 3px 9px; font-size: 11px; }
+  select.facet { margin-left: 8px; font-size: 12px; padding: 3px 6px; max-width: 160px; }
   .cmdlink { cursor: pointer; border-bottom: 1px dotted currentColor; }
   .cmdlink:hover { color: var(--fg); }
 
@@ -237,9 +238,11 @@
     <h2>History
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
         <span class="seg" id="histSeg">
-          <button data-p="hour">Hour</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+          <button data-p="hour">15m</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
         </span>
         <select id="periodSel" style="margin-left:10px"></select>
+        <select id="histModel" class="facet" title="model"></select>
+        <select id="histEffort" class="facet" title="effort"></select>
         <label style="margin-left:12px;font-size:12px;color:var(--dim)">
           <input type="checkbox" id="histSub" checked> subagents</label>
       </span>
@@ -251,8 +254,10 @@
     <h2>Trends
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
         <span class="seg" id="periodSeg">
-          <button data-p="hour">Hour</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+          <button data-p="hour">15m</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
         </span>
+        <select id="trModel" class="facet" title="model"></select>
+        <select id="trEffort" class="facet" title="effort"></select>
         <label style="margin-left:12px;font-size:12px;color:var(--dim)">
           <input type="checkbox" id="subToggle"> include subagents</label>
       </span>
@@ -266,6 +271,8 @@
         <span class="seg" id="ecoRange">
           <button data-r="all" class="on">All time</button><button data-r="30d">30 days</button><button data-r="7d">7 days</button>
         </span>
+        <select id="ecoModel" class="facet" title="model"></select>
+        <select id="ecoEffort" class="facet" title="effort"></select>
         <label style="margin-left:12px;font-size:12px;color:var(--dim)">
           <input type="checkbox" id="ecoSub" checked> include subagents</label>
       </span>
@@ -691,8 +698,17 @@ function miniCard(t, depth) {
 let histAll = [];              // all sessions from /api/history
 let histPeriod = 'day';
 let histSub = true;
+let histModel = '', histEffort = '';
 let histAnchor = null;         // selected bucket key
 let histPoll = null;
+
+// sessions passing the current subagent / model / effort filters
+function histFiltered() {
+  return histAll.filter(s =>
+    (histSub || !s.isSubagent)
+    && (!histModel || s.model === histModel || (histModel === 'codex-auto-review' && s.autoReview))
+    && (!histEffort || s.effort === histEffort));
+}
 let histSort = { col: 'tokens', dir: 'desc' };
 const HIST_COLS = [
   { key: 'started', label: 'Started', num: true, get: t => t.startedAt || '' },
@@ -716,7 +732,10 @@ function histBucketKey(iso) {
     return `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}`;
   }
   const ymd = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
-  if (histPeriod === 'hour') return `${ymd}T${p2(d.getHours())}`;
+  if (histPeriod === 'hour') {
+    const q = Math.floor(d.getMinutes() / 15) * 15;
+    return `${ymd}T${p2(d.getHours())}:${p2(q)}`;
+  }
   return ymd;
 }
 function histBucketLabel(k) {
@@ -725,7 +744,7 @@ function histBucketLabel(k) {
     return new Date(y, m - 1, 1).toLocaleDateString([], { year: 'numeric', month: 'long' });
   }
   if (histPeriod === 'week') return 'Week of ' + new Date(k + 'T00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-  if (histPeriod === 'hour') return new Date(k + ':00').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', hour12: false }) + ':00';
+  if (histPeriod === 'hour') return new Date(k).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
   return new Date(k + 'T00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
@@ -738,13 +757,14 @@ async function loadHistory() {
     return;
   }
   histAll = r.sessions || [];
+  fillFacet($('#histModel'), r.facets && r.facets.models, histModel, 'all models');
+  fillFacet($('#histEffort'), r.facets && r.facets.efforts, histEffort, 'all efforts');
   rebuildPeriodSelect();
   renderHistory();
 }
 
 function rebuildPeriodSelect() {
-  const src = histAll.filter(s => histSub || !s.isSubagent);
-  const keys = [...new Set(src.map(s => histBucketKey(s.startedAt)))].sort().reverse();
+  const keys = [...new Set(histFiltered().map(s => histBucketKey(s.startedAt)))].sort().reverse();
   if (!histAnchor || !keys.includes(histAnchor)) histAnchor = keys[0];
   const sel = $('#periodSel');
   sel.innerHTML = keys.map(k => `<option value="${k}" ${k === histAnchor ? 'selected' : ''}>${esc(histBucketLabel(k))}</option>`).join('');
@@ -758,8 +778,7 @@ function sortHistory(col) {
 
 function renderHistory() {
   if (!histAll.length) { $('#hist').innerHTML = '<div class="empty">No sessions.</div>'; return; }
-  const rows0 = histAll.filter(s =>
-    (histSub || !s.isSubagent) && histBucketKey(s.startedAt) === histAnchor);
+  const rows0 = histFiltered().filter(s => histBucketKey(s.startedAt) === histAnchor);
   const c = HIST_COLS.find(x => x.key === histSort.col);
   const dir = histSort.dir === 'asc' ? 1 : -1;
   const rows = rows0.slice().sort((a, b) => {
@@ -811,6 +830,8 @@ $('#histSeg').addEventListener('click', (e) => {
 });
 $('#periodSel').addEventListener('change', (e) => { histAnchor = e.target.value; renderHistory(); });
 $('#histSub').addEventListener('change', (e) => { histSub = e.target.checked; rebuildPeriodSelect(); renderHistory(); });
+$('#histModel').addEventListener('change', (e) => { histModel = e.target.value; rebuildPeriodSelect(); renderHistory(); });
+$('#histEffort').addEventListener('change', (e) => { histEffort = e.target.value; rebuildPeriodSelect(); renderHistory(); });
 
 $('#runSort').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -916,14 +937,27 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetai
 // trends
 // ---------------------------------------------------------------------------
 let trendPeriod = 'day';
+const perLbl = (p) => p === 'hour' ? '15m' : p;
+const perLblN = (p) => p === 'hour' ? '15m slots' : p + 's';
 let trendSub = false;
 let trendData = null;
 let trendPoll = null;
+let trModel = '', trEffort = '';
 const tExpanded = { cmd: new Set(), prompt: new Set() };
+
+// populate a <select> with "All …" + options, preserving the current value
+function fillFacet(sel, values, cur, allLabel) {
+  if (!sel) return;
+  const want = cur || '';
+  sel.innerHTML = `<option value="">${allLabel}</option>` +
+    (values || []).map(v => `<option value="${attr(v)}"${v === want ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  sel.value = want;
+}
+const facetQS = (m, e) => (m ? `&model=${encodeURIComponent(m)}` : '') + (e ? `&effort=${encodeURIComponent(e)}` : '');
 
 async function loadTrends() {
   const el = $('#trends');
-  const r = await fetch(`/api/trends?period=${trendPeriod}${trendSub ? '&subagents=1' : ''}`).then(x => x.json());
+  const r = await fetch(`/api/trends?period=${trendPeriod}${trendSub ? '&subagents=1' : ''}${facetQS(trModel, trEffort)}`).then(x => x.json());
   if (r.building) {
     const p = r.progress || {};
     el.innerHTML = `<div class="empty">Building rollup cache… ${p.done || 0} / ${p.total || '?'} sessions<br>
@@ -933,6 +967,8 @@ async function loadTrends() {
     return;
   }
   trendData = r;
+  fillFacet($('#trModel'), r.facets && r.facets.models, trModel, 'all models');
+  fillFacet($('#trEffort'), r.facets && r.facets.efforts, trEffort, 'all efforts');
   renderTrends();
 }
 
@@ -965,7 +1001,7 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
     const pts = line.map((v, i) => `${(i / d * 100).toFixed(2)},${(96 - v / lmax * 92).toFixed(2)}`).join(' ');
     lineSvg = `<svg class="bc-line" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;
   }
-  const lbl = (b) => b.length > 7 ? b.slice(5) : b;
+  const lbl = (b) => b.includes(':') ? b.slice(11) : b.length > 7 ? b.slice(5) : b;
   return `<div class="bchart">
     ${label ? `<div class="bc-title">${esc(label)}${opts.lineLabel ? ` · <span class="bc-l2">${esc(opts.lineLabel)} (line)</span>` : ''}${scrollW ? ' · scroll →' : ''}</div>` : ''}
     <div class="bc-body">
@@ -997,9 +1033,9 @@ function renderTrends() {
       <span>cached <b>${fmt(g.cached)}</b></span>
       <span>out <b>${fmt(g.output)}</b></span>
       <span>reasoning <b>${fmt(g.reasoning)}</b></span>
-      <span style="margin-left:auto">${B.length} ${trendPeriod}s · ${d.sessions} sessions${trendSub ? ' (incl. subagents)' : ''}</span>
+      <span style="margin-left:auto">${B.length} ${perLblN(trendPeriod)} · ${d.sessions} sessions${trendSub ? ' (incl. subagents)' : ''}</span>
     </div>
-    ${tbarChart(B, totalsByBucket, 'billed tokens per ' + trendPeriod)}
+    ${tbarChart(B, totalsByBucket, 'billed tokens per ' + perLbl(trendPeriod))}
     <div class="tcols">
       <div>
         <p class="subh">By base command — click a row for its trend</p>
@@ -1020,7 +1056,7 @@ let trendCmdRows = [], trendPromptRows = [];
 function trendDetailRows(r, B) {
   const T = B.length > 96 ? B.slice(-96) : B;
   return `<tr class="trow-detail"><td colspan="4">
-    ${tbarChart(B, b => (r.per[b] && r.per[b].tokens) || 0, 'tokens per ' + trendPeriod)}
+    ${tbarChart(B, b => (r.per[b] && r.per[b].tokens) || 0, 'tokens per ' + perLbl(trendPeriod))}
     <div style="overflow-x:auto"><table><tbody>
       <tr class="lbl-row"><td>${trendPeriod}${T !== B ? ' (last 96)' : ''}</td>${T.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
       <tr><td class="num">tok</td>${T.map(b => `<td class="num">${kfmt((r.per[b] && r.per[b].tokens) || 0)}</td>`).join('')}</tr>
@@ -1092,6 +1128,8 @@ $('#periodSeg').addEventListener('click', (e) => {
   loadTrends();
 });
 $('#subToggle').addEventListener('change', (e) => { trendSub = e.target.checked; loadTrends(); });
+$('#trModel').addEventListener('change', (e) => { trModel = e.target.value; loadTrends(); });
+$('#trEffort').addEventListener('change', (e) => { trEffort = e.target.value; loadTrends(); });
 
 // ---------------------------------------------------------------------------
 // economy — "where do the tokens go, and what looks wasteful"
@@ -1100,6 +1138,7 @@ let ecoRange = 'all';
 let ecoSub = true;
 let ecoData = null;
 let ecoPoll = null;
+let ecoModel = '', ecoEffort = '';
 const ecoCmdOpen = new Set();
 
 // plain-language notes for the tools/commands Codex uses most
@@ -1139,13 +1178,17 @@ const CT_METRICS = [
 const ctState = new Map();   // base -> { period, metric, sub, data, loading }
 
 function ctGet(base) {
-  if (!ctState.has(base)) ctState.set(base, { period: 'week', metric: 'delta', sub: true, data: null, loading: false });
+  if (!ctState.has(base)) ctState.set(base, {
+    period: 'week', metric: 'delta', sub: true,
+    model: ecoModel || trModel || '', effort: ecoEffort || trEffort || '',
+    data: null, loading: false,
+  });
   return ctState.get(base);
 }
 async function ctLoad(base) {
   const s = ctGet(base);
   s.loading = true;
-  const r = await fetch(`/api/command?base=${encodeURIComponent(base)}&period=${s.period}&subagents=${s.sub ? 1 : 0}`).then(x => x.json());
+  const r = await fetch(`/api/command?base=${encodeURIComponent(base)}&period=${s.period}&subagents=${s.sub ? 1 : 0}${facetQS(s.model, s.effort)}`).then(x => x.json());
   s.loading = false;
   if (!r.building) s.data = r;
   ctRerender(base);
@@ -1170,9 +1213,14 @@ function ctPanel(base) {
   const s = ctGet(base);
   const seg = (name, cur, opts) => `<span class="seg" data-ct-seg="${name}">${opts.map(o =>
     `<button data-ct-${name}="${o.k}" class="${o.k === cur ? 'on' : ''}">${esc(o.label)}</button>`).join('')}</span>`;
+  const fac = (s.data && s.data.facets) || { models: [], efforts: [] };
+  const facSel = (kind, cur, vals, allLabel) => `<select data-ct-${kind} class="facet">
+    <option value="">${allLabel}</option>${vals.map(v => `<option value="${attr(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
   const ctrls = `<div class="ct-ctrls" data-ct-base="${esc(base)}">
-    ${seg('period', s.period, [{ k: 'hour', label: 'Hour' }, { k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
+    ${seg('period', s.period, [{ k: 'hour', label: '15m' }, { k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
     ${seg('metric', s.metric, CT_METRICS)}
+    ${facSel('model', s.model, fac.models, 'all models')}
+    ${facSel('effort', s.effort, fac.efforts, 'all efforts')}
     <label style="font-size:11px;color:var(--dim)"><input type="checkbox" data-ct-sub ${s.sub ? 'checked' : ''}> subagents</label>
   </div>`;
 
@@ -1191,7 +1239,7 @@ function ctPanel(base) {
     <span><b>${fmt(t.outTokens)}</b> output tokens</span>
     <span><b>${fmt(t.calls)}</b> calls</span>
     <span><b>${fmt(t.truncated)}</b> truncated</span>
-    <span style="margin-left:auto">${B.length} ${s.period}s · ${fmt(t.sessions)} sessions</span>
+    <span style="margin-left:auto">${B.length} ${perLblN(s.period)} · ${fmt(t.sessions)} sessions</span>
   </div>`;
 
   const open = s.openRows || (s.openRows = new Set());
@@ -1210,7 +1258,7 @@ function ctPanel(base) {
     if (o) {
       const T = B.length > 96 ? B.slice(-96) : B;
       h += `<tr class="trow-detail"><td colspan="4">
-        ${tbarChart(B, b => (rpf(r.per[b], b) || 0), esc(short(r.cmd, 90)) + ' — ' + rowLabel.toLowerCase() + ' per ' + s.period)}
+        ${tbarChart(B, b => (rpf(r.per[b], b) || 0), esc(short(r.cmd, 90)) + ' — ' + rowLabel.toLowerCase() + ' per ' + perLbl(s.period))}
         <div style="overflow-x:auto"><table><tbody>
           <tr class="lbl-row"><td>${s.period}${T !== B ? ' (last 96)' : ''}</td>${T.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
           <tr><td class="num">${esc(rowLabel)}</td>${T.map(b => `<td class="num">${kfmt(rpf(r.per[b], b) || 0)}</td>`).join('')}</tr>
@@ -1231,7 +1279,7 @@ function ctPanel(base) {
     <tbody>${sampRows(d.pollTargets)}</tbody></table>` : '';
 
   return ctrls + grand
-    + `<p class="subh" style="margin-top:8px">${esc(mLabel)} per ${s.period} — all invocations of <code>${esc(base)}</code></p>`
+    + `<p class="subh" style="margin-top:8px">${esc(mLabel)} per ${perLbl(s.period)} — all invocations of <code>${esc(base)}</code></p>`
     + tbarChart(B, b => perB[b], null, line ? { line, lineLabel: 'calls' } : {})
     + samplesTbl + pollsTbl;
 }
@@ -1277,10 +1325,15 @@ document.addEventListener('click', (e) => {
   }
 });
 document.addEventListener('change', (e) => {
-  if (!e.target.matches('[data-ct-sub]')) return;
-  const base = e.target.closest('.ct-ctrls').dataset.ctBase;
+  const ctrls = e.target.closest('.ct-ctrls');
+  if (!ctrls) return;
+  const base = ctrls.dataset.ctBase;
   const s = ctGet(base);
-  s.sub = e.target.checked; s.data = null; ctRerender(base); ctLoad(base);
+  if (e.target.matches('[data-ct-model]')) s.model = e.target.value;
+  else if (e.target.matches('[data-ct-effort]')) s.effort = e.target.value;
+  else if (e.target.matches('[data-ct-sub]')) s.sub = e.target.checked;
+  else return;
+  s.data = null; ctRerender(base); ctLoad(base);
 });
 // clickable command names → overlay
 document.addEventListener('click', (e) => {
@@ -1290,7 +1343,7 @@ document.addEventListener('click', (e) => {
 
 async function loadEconomy() {
   const el = $('#economy');
-  const r = await fetch(`/api/economy?range=${ecoRange}&subagents=${ecoSub ? 1 : 0}`).then(x => x.json());
+  const r = await fetch(`/api/economy?range=${ecoRange}&subagents=${ecoSub ? 1 : 0}${facetQS(ecoModel, ecoEffort)}`).then(x => x.json());
   if (r.building) {
     const p = r.progress || {};
     el.innerHTML = `<div class="empty">Building rollup cache… ${p.done || 0} / ${p.total || '?'} sessions</div>`;
@@ -1298,6 +1351,8 @@ async function loadEconomy() {
     return;
   }
   ecoData = r;
+  fillFacet($('#ecoModel'), r.facets && r.facets.models, ecoModel, 'all models');
+  fillFacet($('#ecoEffort'), r.facets && r.facets.efforts, ecoEffort, 'all efforts');
   renderEconomy();
 }
 
@@ -1406,6 +1461,8 @@ $('#ecoRange').addEventListener('click', (e) => {
   ecoRange = b.dataset.r; loadEconomy();
 });
 $('#ecoSub').addEventListener('change', (e) => { ecoSub = e.target.checked; loadEconomy(); });
+$('#ecoModel').addEventListener('change', (e) => { ecoModel = e.target.value; loadEconomy(); });
+$('#ecoEffort').addEventListener('change', (e) => { ecoEffort = e.target.value; loadEconomy(); });
 
 // ---------------------------------------------------------------------------
 // tabs

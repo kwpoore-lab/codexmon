@@ -952,13 +952,39 @@ function bucketKey(period, iso) {
     t.setDate(t.getDate() - ((t.getDay() + 6) % 7));      // back to Monday
     return `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}`;
   }
-  if (period === 'hour') return `${ymd}T${p2(d.getHours())}`;
+  if (period === 'hour') {   // the finest filter = even 15-minute slots
+    const q = Math.floor(d.getMinutes() / 15) * 15;
+    return `${ymd}T${p2(d.getHours())}:${p2(q)}`;
+  }
   return ymd;
 }
 
-function trends(period, includeSub) {
-  const recs = [...rollupCache.sessions.values()]
-    .filter((r) => r.startedAt && (includeSub || !r.isSubagent));
+// distinct model / effort values for the filter dropdowns
+function rollupFacets() {
+  const models = new Set(), efforts = new Set();
+  for (const r of rollupCache.sessions.values()) {
+    if (r.model) models.add(r.model);
+    if (r.autoReview) models.add('codex-auto-review');
+    if (r.effort) efforts.add(r.effort);
+  }
+  const order = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4 };
+  return {
+    models: [...models].sort(),
+    efforts: [...efforts].sort((a, b) => (order[a] ?? 9) - (order[b] ?? 9)),
+  };
+}
+
+// filter helper shared by trends / economy / commandTrend
+function pickSessions(includeSub, model, effort) {
+  return [...rollupCache.sessions.values()].filter((r) =>
+    r.startedAt
+    && (includeSub || !r.isSubagent)
+    && (!model || r.model === model || (model === 'codex-auto-review' && r.autoReview))
+    && (!effort || r.effort === effort));
+}
+
+function trends(period, includeSub, model, effort) {
+  const recs = pickSessions(includeSub, model, effort);
   const buckets = new Set();
   const totals = {};
   const cmdMap = new Map();
@@ -1001,15 +1027,15 @@ function trends(period, includeSub) {
     byCommand: [...cmdMap.values()].sort((a, b) => b.total - a.total),
     byPrompt: [...promptMap.values()].sort((a, b) => b.total - a.total).slice(0, 400),
     sessions: recs.length,
+    facets: rollupFacets(),
   };
 }
 
 // "Where are the tokens going, and what looks wasteful?"
-function economy(sinceMs, includeSub) {
+function economy(sinceMs, includeSub, model, effort) {
   const cutoff = sinceMs ? Date.now() - sinceMs : 0;
-  const recs = [...rollupCache.sessions.values()].filter((r) =>
-    r.startedAt && (includeSub || !r.isSubagent) &&
-    (!cutoff || new Date(r.startedAt).getTime() >= cutoff));
+  const recs = pickSessions(includeSub, model, effort).filter((r) =>
+    !cutoff || new Date(r.startedAt).getTime() >= cutoff);
 
   const tot = { sessions: recs.length, outTokens: 0, toolCalls: 0, pollTurns: 0,
     truncatedCalls: 0, dupeRuns: 0, dupeTokens: 0, modelOutput: 0, modelReasoning: 0 };
@@ -1072,14 +1098,14 @@ function economy(sinceMs, includeSub) {
     bigOutputs: bigOutputs.sort((a, b) => b.tokens - a.tokens).slice(0, 40),
     dupes: dupes.sort((a, b) => b.tokens - a.tokens).slice(0, 40),
     pollSessions: pollSessions.filter((s) => s.pollTurns > 0).sort((a, b) => b.pct - a.pct).slice(0, 25),
+    facets: rollupFacets(),
   };
 }
 
 // Time-series for one base command: output tokens / calls / truncated / Δ tokens
 // per day|week|month bucket, plus per-invocation and per-polled-process series.
-function commandTrend(base, period, includeSub) {
-  const recs = [...rollupCache.sessions.values()].filter((r) =>
-    r.startedAt && (includeSub || !r.isSubagent));
+function commandTrend(base, period, includeSub, model, effort) {
+  const recs = pickSessions(includeSub, model, effort);
   const buckets = new Set();
   const series = { outTokens: {}, calls: {}, truncated: {}, delta: {} };
   const bump = (k, b, v) => { series[k][b] = (series[k][b] || 0) + v; };
@@ -1122,6 +1148,7 @@ function commandTrend(base, period, includeSub) {
     series, totals,
     samples: [...sampMap.values()].sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 15),
     pollTargets: [...pollMap.values()].sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 12),
+    facets: rollupFacets(),
   };
 }
 
@@ -1197,11 +1224,11 @@ const server = http.createServer((req, res) => {
 
   if (pathn === '/api/trends') {
     ensureRollups();
-    const period = ['hour', 'day', 'week', 'month'].includes(url.searchParams.get('period'))
-      ? url.searchParams.get('period') : 'day';
-    const includeSub = url.searchParams.get('subagents') === '1';
+    const q = url.searchParams;
+    const period = ['hour', 'day', 'week', 'month'].includes(q.get('period')) ? q.get('period') : 'day';
+    const includeSub = q.get('subagents') === '1';
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
-    return json(res, 200, trends(period, includeSub));
+    return json(res, 200, trends(period, includeSub, q.get('model') || '', q.get('effort') || ''));
   }
 
   if (pathn === '/api/history') {
@@ -1227,27 +1254,27 @@ const server = http.createServer((req, res) => {
         toolCalls: r.toolCalls,
       }))
       .sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
-    return json(res, 200, { sessions: rows });
+    return json(res, 200, { sessions: rows, facets: rollupFacets() });
   }
 
   if (pathn === '/api/economy') {
     ensureRollups();
-    const range = url.searchParams.get('range');
-    const sinceMs = range === '7d' ? 7 * 864e5 : range === '30d' ? 30 * 864e5 : 0;
-    const includeSub = url.searchParams.get('subagents') !== '0';   // default: include
+    const q = url.searchParams;
+    const sinceMs = q.get('range') === '7d' ? 7 * 864e5 : q.get('range') === '30d' ? 30 * 864e5 : 0;
+    const includeSub = q.get('subagents') !== '0';   // default: include
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
-    return json(res, 200, economy(sinceMs, includeSub));
+    return json(res, 200, economy(sinceMs, includeSub, q.get('model') || '', q.get('effort') || ''));
   }
 
   if (pathn === '/api/command') {
     ensureRollups();
-    const base = url.searchParams.get('base');
-    const period = ['hour', 'day', 'week', 'month'].includes(url.searchParams.get('period'))
-      ? url.searchParams.get('period') : 'week';
-    const includeSub = url.searchParams.get('subagents') !== '0';
+    const q = url.searchParams;
+    const base = q.get('base');
+    const period = ['hour', 'day', 'week', 'month'].includes(q.get('period')) ? q.get('period') : 'week';
+    const includeSub = q.get('subagents') !== '0';
     if (!base) return json(res, 400, { error: 'base required' });
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
-    return json(res, 200, commandTrend(base, period, includeSub));
+    return json(res, 200, commandTrend(base, period, includeSub, q.get('model') || '', q.get('effort') || ''));
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });
