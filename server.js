@@ -289,6 +289,8 @@ function applyLine(sum, raw) {
       if (sum.tokenSeries.length > 4000) sum.tokenSeries.shift();
     }
     if (info.model_context_window) sum.contextWindow = info.model_context_window;
+    // rate-limit / quota readout (only present on some token_count events)
+    if (p.rate_limits) { sum.rateLimits = p.rate_limits; sum.rateLimitsAt = ts; }
     return;
   }
 
@@ -514,6 +516,8 @@ function decorate(sum, full) {
     lastReqInput: sum.lastReqInput,
     cumReqTokens: sum.cumReqTokens || 0,
     compactions: sum.compactions || 0,
+    rateLimits: sum.rateLimits || null,
+    rateLimitsAt: sum.rateLimitsAt || null,
     contextUsed: sum.contextWindow && sum.lastReqInput
       ? Math.min(100, Math.round(100 * sum.lastReqInput / sum.contextWindow)) : null,
     tokenSeries: full ? sum.tokenSeries.slice(-600) : sum.tokenSeries.slice(-60),
@@ -539,7 +543,32 @@ function liveSnapshot() {
     .filter(Boolean)
     .map(decorate)
     .sort((a, b) => b.mtime - a.mtime);
-  return { now: Date.now(), threads: rows };
+
+  // freshest rate-limit / quota reading across live threads
+  let rateLimits = null, rlAt = '';
+  for (const r of rows) {
+    if (r.rateLimits && (r.rateLimitsAt || '') > rlAt) { rateLimits = r.rateLimits; rlAt = r.rateLimitsAt; }
+  }
+
+  // token totals for today / this week, from the rollup cache when it's ready
+  if (Date.now() - (liveSnapshot._lastRollupPoke || 0) > 20000) {
+    liveSnapshot._lastRollupPoke = Date.now();
+    ensureRollups();
+  }
+  const usage = { haveRollups: rollupReady, today: 0, week: 0 };
+  if (rollupReady) {
+    const nowIso = new Date().toISOString();
+    const dayKey = bucketKey('day', nowIso);
+    const weekKey = bucketKey('week', nowIso);
+    for (const rec of rollupCache.sessions.values()) {
+      if (!rec.startedAt) continue;
+      const billed = rec.totals.billed || rec.totals.total || 0;
+      if (bucketKey('day', rec.startedAt) === dayKey) usage.today += billed;
+      if (bucketKey('week', rec.startedAt) === weekKey) usage.week += billed;
+    }
+  }
+
+  return { now: Date.now(), threads: rows, rateLimits, rateLimitsAt: rlAt || null, usage };
 }
 
 function historySnapshot(date) {
@@ -614,7 +643,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 8;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 9;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -639,7 +668,9 @@ function scanSession(file, st) {
     const rec = {
       id: fileUuid(file), file, mtime: st.mtimeMs, size: st.size,
       startedAt: null, prompt: null, project: null, isSubagent: false,
-      totals: { total: 0, input: 0, output: 0, cached: 0, reasoning: 0 },
+      model: null, repo: null, branch: null, agentNickname: null, depth: 0,
+      autoReview: false, compactions: 0, originator: null,
+      totals: { total: 0, input: 0, output: 0, cached: 0, reasoning: 0, billed: 0 },
       cmds: [],
       // economy signals
       toolCalls: 0, pollTurns: 0, outTokens: 0,
@@ -662,17 +693,32 @@ function scanSession(file, st) {
       const tok = line.indexOf('"token_count"') !== -1;
       const tool = line.indexOf('custom_tool_call') !== -1 || line.indexOf('function_call') !== -1;
       const meta = line.indexOf('"session_meta"') !== -1;
+      const tctx = line.indexOf('"turn_context"') !== -1;
       const user = firstUser === null && line.indexOf('"role":"user"') !== -1;
-      if (!tok && !tool && !meta && !user) return;
+      if (!tok && !tool && !meta && !tctx && !user) return;
       let o; try { o = JSON.parse(line); } catch (_) { return; }
       const p = o.payload || {};
       if (o.type === 'session_meta') {
         rec.startedAt = p.timestamp || o.timestamp;
         rec.project = p.cwd ? path.basename(p.cwd) : null;
+        rec.originator = p.originator || null;
+        if (p.git && typeof p.git === 'object') {
+          rec.branch = p.git.branch || null;
+          rec.repo = p.git.repository_url
+            ? p.git.repository_url.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '') : null;
+        }
         const src = p.source;
-        if (src && typeof src === 'object' && src.subagent) rec.isSubagent = true;
+        if (src && typeof src === 'object' && src.subagent && src.subagent.thread_spawn) {
+          rec.isSubagent = true;
+          rec.agentNickname = src.subagent.thread_spawn.agent_nickname || null;
+          rec.depth = src.subagent.thread_spawn.depth || 1;
+        }
+      } else if (o.type === 'turn_context') {
+        if (p.model === 'codex-auto-review') rec.autoReview = true;
+        else if (p.model && !rec.model) rec.model = p.model;
       } else if (o.type === 'event_msg' && p.type === 'token_count' && p.info && p.info.total_token_usage) {
         const u = p.info.total_token_usage;
+        if (lastTotal > 1000 && (u.total_tokens || 0) < lastTotal * 0.5) rec.compactions++;
         lastTotal = u.total_tokens || lastTotal;
         rec.totals.total = u.total_tokens || rec.totals.total;
         rec.totals.input = u.input_tokens || rec.totals.input;
@@ -969,6 +1015,30 @@ const server = http.createServer((req, res) => {
     const includeSub = url.searchParams.get('subagents') === '1';
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
     return json(res, 200, trends(period, includeSub));
+  }
+
+  if (pathn === '/api/history') {
+    ensureRollups();
+    if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
+    loadThreadNames();
+    const rows = [...rollupCache.sessions.values()]
+      .filter((r) => r.startedAt)
+      .map((r) => ({
+        id: r.id,
+        startedAt: r.startedAt,
+        title: threadNames[r.id] || null,
+        prompt: r.prompt,
+        project: r.project,
+        repo: r.repo, branch: r.branch,
+        model: r.model, autoReview: r.autoReview,
+        isSubagent: r.isSubagent, agentNickname: r.agentNickname, depth: r.depth,
+        tokens: r.totals.billed || r.totals.total,
+        rawTokens: r.totals.total,
+        compactions: r.compactions,
+        toolCalls: r.toolCalls,
+      }))
+      .sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
+    return json(res, 200, { sessions: rows });
   }
 
   if (pathn === '/api/economy') {

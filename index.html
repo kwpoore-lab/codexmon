@@ -166,7 +166,7 @@
 <header>
   <h1>codexmon</h1>
   <nav id="tabs">
-    <a href="#running" data-tab="running" class="on">Running now</a>
+    <a href="#running" data-tab="running" class="on">Prompts running now</a>
     <a href="#history" data-tab="history">History</a>
     <a href="#trends" data-tab="trends">Trends</a>
     <a href="#economy" data-tab="economy">Economy</a>
@@ -176,16 +176,25 @@
 </header>
 <main>
   <section id="tab-running">
-    <h2>Running now</h2>
+    <div id="usageSummary" class="tgrand" hidden></div>
+    <h2>Prompts running now</h2>
     <div id="running"><div class="empty">Waiting for activity…</div></div>
     <h2>Other live sessions</h2>
     <div id="live" class="grid"></div>
   </section>
 
   <section id="tab-history" hidden>
-    <h2>History <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
-      <select id="dateSel"></select></span></h2>
-    <div id="hist"><div class="empty">Select a date.</div></div>
+    <h2>History
+      <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
+        <span class="seg" id="histSeg">
+          <button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+        </span>
+        <select id="periodSel" style="margin-left:10px"></select>
+        <label style="margin-left:12px;font-size:12px;color:var(--dim)">
+          <input type="checkbox" id="histSub" checked> subagents</label>
+      </span>
+    </h2>
+    <div id="hist"><div class="empty">Loading…</div></div>
   </section>
 
   <section id="tab-trends" hidden>
@@ -261,11 +270,56 @@ function render(snap) {
   $('#conn').classList.add('ok');
   const threads = snap.threads || [];
   const running = threads.filter(t => t.status === 'running');
+  const wk = snap.rateLimits && snap.rateLimits.primary
+    ? ` · ${snap.rateLimits.primary.used_percent.toFixed(0)}% ${winShort(snap.rateLimits.primary.window_minutes)}` : '';
   $('#hdrstat').textContent =
-    `${threads.length} live · ${running.length} running · updated ${new Date(snap.now).toLocaleTimeString()}`;
+    `${threads.length} live · ${running.length} running · updated ${new Date(snap.now).toLocaleTimeString()}${wk}`;
 
+  renderUsage(snap);
   renderRunning(threads, running);
   renderLiveGrid(threads);
+}
+
+function winShort(mins) {
+  if (mins >= 10080) return 'wk';
+  if (mins >= 1440) return Math.round(mins / 1440) + 'd';
+  return Math.round(mins / 60) + 'h';
+}
+function winLabel(mins) {
+  if (mins >= 10080) return `${Math.round(mins / 10080)}-week`;
+  if (mins >= 1440) return `${Math.round(mins / 1440)}-day`;
+  return `${Math.round(mins / 60)}-hour`;
+}
+function untilReset(unixSec) {
+  const ms = unixSec * 1000 - Date.now();
+  if (ms <= 0) return 'now';
+  const h = ms / 3600000;
+  if (h >= 48) return Math.round(h / 24) + 'd';
+  if (h >= 1) return Math.floor(h) + 'h ' + Math.round((h % 1) * 60) + 'm';
+  return Math.round(ms / 60000) + 'm';
+}
+
+function renderUsage(snap) {
+  const el = $('#usageSummary');
+  const rl = snap.rateLimits, u = snap.usage || {};
+  const parts = [];
+  const windowStat = (w, name) => {
+    if (!w) return;
+    const rem = (100 - w.used_percent).toFixed(w.used_percent > 99 ? 1 : 0);
+    parts.push(`<span title="${name} limit window"><b>${w.used_percent.toFixed(w.used_percent < 10 ? 1 : 0)}%</b> used · <b>${rem}%</b> left of ${winLabel(w.window_minutes)} limit${w.resets_at ? ` · resets in ${untilReset(w.resets_at)}` : ''}</span>`);
+  };
+  if (rl) { windowStat(rl.primary, 'primary'); windowStat(rl.secondary, 'secondary'); }
+  if (u.haveRollups) {
+    parts.push(`<span><b>${kfmtN(u.today)}</b> tokens today</span>`);
+    parts.push(`<span><b>${kfmtN(u.week)}</b> this week</span>`);
+  }
+  const liveTok = (snap.threads || []).reduce((a, t) => a + (t.cumReqTokens || 0), 0);
+  if (snap.threads && snap.threads.length)
+    parts.push(`<span><b>${kfmtN(liveTok)}</b> across ${snap.threads.length} live</span>`);
+  if (rl && rl.plan_type) parts.push(`<span style="margin-left:auto">plan: ${esc(rl.plan_type)}${rl.credits && rl.credits.balance && rl.credits.balance !== '0' ? ` · $${esc(rl.credits.balance)} credit` : ''}</span>`);
+
+  el.innerHTML = parts.join('');
+  el.hidden = !parts.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -498,32 +552,63 @@ function miniCard(t) {
 // ---------------------------------------------------------------------------
 // history
 // ---------------------------------------------------------------------------
-async function loadDates() {
-  const r = await fetch('/api/dates').then(x => x.json());
-  const sel = $('#dateSel');
-  sel.innerHTML = r.dates.map(d => `<option value="${d}">${d}</option>`).join('');
-  if (r.dates.length) { sel.value = r.dates[0]; loadHistory(r.dates[0]); }
-  sel.onchange = () => loadHistory(sel.value);
-}
-let histRows = [];
+let histAll = [];              // all sessions from /api/history
+let histPeriod = 'day';
+let histSub = true;
+let histAnchor = null;         // selected bucket key
+let histPoll = null;
 let histSort = { col: 'started', dir: 'desc' };
 const HIST_COLS = [
   { key: 'started', label: 'Started', num: true, get: t => t.startedAt || '' },
   { key: 'thread', label: 'Thread', get: t => (t.title || t.agentNickname || t.id).toLowerCase() },
-  { key: 'prompt', label: 'Prompt', get: t => (t.firstUserText || '').toLowerCase() },
+  { key: 'prompt', label: 'Prompt', get: t => (t.prompt || '').toLowerCase() },
   { key: 'project', label: 'Project', get: t => (t.project || '').toLowerCase() },
-  { key: 'model', label: 'Model', get: t => (t.primaryModel || '').toLowerCase() },
+  { key: 'model', label: 'Model', get: t => (t.model || '').toLowerCase() },
   { key: 'kind', label: 'Kind', get: t => (t.isSubagent ? 'subagent' : 'main') },
-  { key: 'tokens', label: 'Tokens', num: true, get: t => (t.tokens && t.tokens.total_tokens) || 0 },
-  { key: 'cmds', label: 'Cmds', num: true, get: t => t.toolCallCount || 0 },
+  { key: 'tokens', label: 'Tokens', num: true, get: t => t.tokens || 0 },
+  { key: 'cmds', label: 'Cmds', num: true, get: t => t.toolCalls || 0 },
 ];
 
-async function loadHistory(date) {
-  $('#hist').innerHTML = '<div class="empty">Loading…</div>';
-  const r = await fetch('/api/sessions?date=' + date).then(x => x.json());
-  histRows = r.threads || [];
-  if (!histRows.length) { $('#hist').innerHTML = '<div class="empty">No sessions.</div>'; return; }
+function histBucketKey(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '?';
+  const p2 = n => String(n).padStart(2, '0');
+  if (histPeriod === 'month') return `${d.getFullYear()}-${p2(d.getMonth() + 1)}`;
+  if (histPeriod === 'week') {
+    const t = new Date(d); t.setHours(0, 0, 0, 0);
+    t.setDate(t.getDate() - ((t.getDay() + 6) % 7));
+    return `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}`;
+  }
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+function histBucketLabel(k) {
+  if (histPeriod === 'month') {
+    const [y, m] = k.split('-');
+    return new Date(y, m - 1, 1).toLocaleDateString([], { year: 'numeric', month: 'long' });
+  }
+  if (histPeriod === 'week') return 'Week of ' + new Date(k + 'T00:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  return new Date(k + 'T00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+async function loadHistory() {
+  const r = await fetch('/api/history').then(x => x.json());
+  if (r.building) {
+    const p = r.progress || {};
+    $('#hist').innerHTML = `<div class="empty">Building rollup cache… ${p.done || 0} / ${p.total || '?'} sessions</div>`;
+    clearTimeout(histPoll); histPoll = setTimeout(loadHistory, 1500);
+    return;
+  }
+  histAll = r.sessions || [];
+  rebuildPeriodSelect();
   renderHistory();
+}
+
+function rebuildPeriodSelect() {
+  const src = histAll.filter(s => histSub || !s.isSubagent);
+  const keys = [...new Set(src.map(s => histBucketKey(s.startedAt)))].sort().reverse();
+  if (!histAnchor || !keys.includes(histAnchor)) histAnchor = keys[0];
+  const sel = $('#periodSel');
+  sel.innerHTML = keys.map(k => `<option value="${k}" ${k === histAnchor ? 'selected' : ''}>${esc(histBucketLabel(k))}</option>`).join('');
 }
 
 function sortHistory(col) {
@@ -533,33 +618,58 @@ function sortHistory(col) {
 }
 
 function renderHistory() {
+  if (!histAll.length) { $('#hist').innerHTML = '<div class="empty">No sessions.</div>'; return; }
+  const rows0 = histAll.filter(s =>
+    (histSub || !s.isSubagent) && histBucketKey(s.startedAt) === histAnchor);
   const c = HIST_COLS.find(x => x.key === histSort.col);
   const dir = histSort.dir === 'asc' ? 1 : -1;
-  const rows = histRows.slice().sort((a, b) => {
+  const rows = rows0.slice().sort((a, b) => {
     const va = c.get(a), vb = c.get(b);
     return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
   });
+  const sum = rows0.reduce((a, r) => {
+    a.tok += r.tokens || 0; a.cmds += r.toolCalls || 0;
+    a.main += r.isSubagent ? 0 : 1; a.sub += r.isSubagent ? 1 : 0;
+    return a;
+  }, { tok: 0, cmds: 0, main: 0, sub: 0 });
+
   const th = HIST_COLS.map(col =>
     `<th class="sortable ${col.num ? 'num' : ''} ${histSort.col === col.key ? histSort.dir : ''}"
        onclick="sortHistory('${col.key}')">${col.label}</th>`).join('');
-  $('#hist').innerHTML = `<table><thead><tr>${th}</tr></thead><tbody>
+  $('#hist').innerHTML = `
+    <div class="tgrand">
+      <span><b>${fmt(sum.tok)}</b> billed tokens</span>
+      <span><b>${sum.main}</b> sessions${sum.sub ? ` · ${sum.sub} subagents` : ''}</span>
+      <span><b>${fmt(sum.cmds)}</b> commands</span>
+      <span style="margin-left:auto">${esc(histBucketLabel(histAnchor))}</span>
+    </div>
+    <table><thead><tr>${th}</tr></thead><tbody>
     ${rows.map(t => {
       const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
       const kind = t.isSubagent ? `subagent${t.agentNickname ? ' · ' + esc(t.agentNickname) : ''}` : 'main';
-      const models = [t.primaryModel, t.autoReview ? '+review' : null].filter(Boolean).join(' ');
+      const models = [t.model, t.autoReview ? '+review' : null].filter(Boolean).join(' ');
       return `<tr onclick="openDetail('${t.id}')" style="cursor:pointer">
         <td class="num">${hhmmss(t.startedAt)}</td>
         <td>${esc(name)}</td>
-        <td style="max-width:280px;color:var(--dim)">${esc(short(t.firstUserText, 100))}</td>
-        <td>${esc(t.git ? t.git.repo || t.project : t.project || '')}${t.git ? ' @ ' + esc(t.git.branch) : ''}</td>
+        <td style="max-width:280px;color:var(--dim)">${esc(short(t.prompt, 100))}</td>
+        <td>${esc(t.repo || t.project || '')}${t.branch ? ' @ ' + esc(t.branch) : ''}</td>
         <td>${esc(models || '–')}</td>
         <td>${kind}</td>
-        <td class="num">${fmt(t.tokens && t.tokens.total_tokens)}</td>
-        <td class="num">${t.toolCallCount}</td>
+        <td class="num">${fmt(t.tokens)}${t.compactions ? ' ⤺' : ''}</td>
+        <td class="num">${t.toolCalls}</td>
       </tr>`;
     }).join('')}
   </tbody></table>`;
 }
+
+$('#histSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...$('#histSeg').children].forEach(x => x.classList.toggle('on', x === b));
+  histPeriod = b.dataset.p; histAnchor = null;
+  rebuildPeriodSelect(); renderHistory();
+});
+$('#periodSel').addEventListener('change', (e) => { histAnchor = e.target.value; renderHistory(); });
+$('#histSub').addEventListener('change', (e) => { histSub = e.target.checked; rebuildPeriodSelect(); renderHistory(); });
 
 // ---------------------------------------------------------------------------
 // detail overlay
@@ -938,7 +1048,7 @@ function showTab(name) {
   curTab = name;
   for (const t of TABS) $('#tab-' + t).hidden = t !== name;
   [...$('#tabs').children].forEach(a => a.classList.toggle('on', a.dataset.tab === name));
-  if (name === 'history' && !histRows.length) loadDates();
+  if (name === 'history' && !histAll.length) loadHistory();
   if (name === 'trends' && !trendData) loadTrends();
   if (name === 'economy' && !ecoData) loadEconomy();
 }
@@ -946,11 +1056,7 @@ window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 
 connect();
 showTab(location.hash.slice(1) || 'running');
-setInterval(() => {
-  if (curTab !== 'history') return;
-  const s = $('#dateSel');
-  if (s && s.value === s.options[0]?.value) loadHistory(s.value);
-}, 30000);
+setInterval(() => { if (curTab === 'history') loadHistory(); }, 60000);
 </script>
 </body>
 </html>

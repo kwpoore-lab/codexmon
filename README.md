@@ -30,11 +30,17 @@ If it can't find one, set `CODEX_HOME` or pass `--root`.
 
 Four tabs: **Running now**, **History**, **Trends**, **Economy**.
 
-### Running now
+### Prompts running now
 
-Refreshed every 2s over Server-Sent Events. One panel *per active agent* (any session written
-to in the last 15s, or mid-turn). Collapsed by default so many agents fit on one screen; click
-the ▸ caret to expand.
+Refreshed every 2s over Server-Sent Events.
+
+A **usage bar** at the top shows the account's rate-limit windows (% used / % left of the
+weekly limit, time to reset — read from Codex's `rate_limits` in the rollout stream), plus
+tokens today / this week and the live total. The weekly % is also mirrored into the header
+status line.
+
+One panel *per active agent* (any session written to in the last 15s, or mid-turn). Collapsed
+by default so many agents fit on one screen; click the ▸ caret to expand.
 
 Collapsed shows: title, age, active-turn flag, a one-line token/ctx/cmd/turn summary,
 project · model · effort · tier, the latest message, and the **consumption-over-time chart**
@@ -64,9 +70,10 @@ subagents nested under their parent, dot = 🟢 running / 🟡 idle.
 
 ### History
 
-Pick a date; table of every session that day (main + subagents) with the prompt, model, token
-total, command count. **Click any column header to sort.** Click a row for the detail panel:
-full message/tool/reasoning timeline, the consumption chart, base-command breakdown, metadata.
+**Day / Week / Month** toggle + a period picker (subagents optional). Table of every session in
+that period (started, thread, prompt, project, model, kind, billed tokens, commands) with a
+totals bar. **Click any column header to sort.** Click a row for the detail panel: full
+message/tool/reasoning timeline, the consumption chart, base-command breakdown, metadata.
 
 ### Trends
 
@@ -121,8 +128,8 @@ incrementally after.
 |---|---|
 | `GET /` | UI |
 | `GET /events` | SSE stream of the live snapshot |
-| `GET /api/dates` | available history dates |
-| `GET /api/sessions?date=YYYY-MM-DD` | session summaries for a day |
+| `GET /api/history` | lightweight rollup rows for the History table (all sessions) |
+| `GET /api/sessions?date=YYYY-MM-DD` | full session summaries for one day |
 | `GET /api/session/:uuid` | full timeline + summary |
 | `GET /api/trends?period=day\|week\|month&subagents=0\|1` | aggregated rollups (`{building:true}` while first scan runs) |
 | `GET /api/economy?range=all\|30d\|7d&subagents=0\|1` | token-economy signals from the same rollups |
