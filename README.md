@@ -15,16 +15,22 @@ Zero dependencies (Node stdlib only). Open the URL in a browser.
 
 Refreshed every 2s over Server-Sent Events.
 
-**Running now** — one full panel *per active agent* (any session written to in the last 15s,
-or mid-turn). Each panel:
+**Running now** — one panel *per active agent* (any session written to in the last 15s, or
+mid-turn). Collapsed by default so many agents fit on one screen; click the ▸ caret to expand.
 
-- title (`~/.codex/session_index.jsonl`), project + git repo/branch, model / effort / tier / client
-- **session prompt** — the opening user message — plus the latest message if different
-- token stat line: total, context-window fill %, input / cached / output / reasoning
-- **consumption-over-time chart**: cumulative tokens (area/line) with per-turn tokens as bars
+Collapsed shows: title, age, active-turn flag, a one-line token/ctx/cmd/turn summary,
+project · model · effort · tier, the latest message, and the **consumption-over-time chart**
+(cumulative tokens as area/line, per-turn tokens as bars).
+
+Expanded adds: cwd + full badges, the full **session prompt** and latest message, the token
+breakdown (total / ctx window / in / cached / out / reasoning), and two tables —
+
 - **Commands, latest first**: time · command · Δ tokens (consumed after that step) · running total
 - **Consumption by base command**: the same commands grouped by base verb with parameters
   stripped (`git status`, `sed`, `apply_patch`, `rg`, …) — runs + summed Δ tokens, biggest first
+
+"% ctx" is the last request's input tokens over the model context window (real occupancy) —
+not the cumulative session total, which far exceeds the window.
 
 **Other live sessions** — compact cards for everything else touched in the last 15 min,
 subagents nested under their parent, dot = 🟢 running / 🟡 idle.

@@ -40,9 +40,19 @@
 
   /* focus panel — one per active agent */
   .focus { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--green);
-    border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
-  .ftitle { font-size: 16px; font-weight: 600; }
-  .fmeta { color: var(--dim); font-size: 12px; margin: 3px 0 8px; }
+    border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .fhead { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-wrap: wrap; }
+  .caret { display: inline-block; color: var(--dim); font-size: 11px; transition: transform .12s; width: 10px; }
+  .focus.expanded .caret { transform: rotate(90deg); }
+  .fhead-tok { margin-left: auto; font: 11.5px/1 var(--mono); color: var(--dim); white-space: nowrap; }
+  .tl-link { font-size: 11.5px; }
+  .fhead-tok + .tl-link { margin-left: 12px; }
+  .ftitle { font-size: 15px; font-weight: 600; }
+  .fmeta { color: var(--dim); font-size: 12px; margin: 4px 0 2px; padding-left: 18px; }
+  .promptmini { font-size: 12.5px; color: var(--fg); padding-left: 18px; margin: 2px 0 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .82; }
+  .fdetail { display: none; margin-top: 8px; }
+  .focus.expanded .fdetail { display: block; }
   .fpath { font-family: var(--mono); font-size: 11px; color: var(--dim); word-break: break-all; }
   .prompt { margin: 10px 0; padding: 9px 11px; background: var(--panel2); border-radius: 6px;
     border-left: 2px solid var(--accent); }
@@ -53,7 +63,7 @@
   .statline b { color: var(--fg); font-weight: 600; }
   .chartwrap { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
     padding: 8px 10px 4px; margin: 8px 0; }
-  .chart { width: 100%; height: 230px; display: block; }
+  .chart { width: 100%; display: block; }
   .chart text { fill: var(--dim); font: 10px var(--mono); }
   .cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; margin-top: 12px; }
   @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
@@ -192,8 +202,9 @@ function focusBlock(t) {
   if (t.originator) badges.push(`<span class="badge">${esc(t.originator)}</span>`);
 
   const tk = t.tokens || {};
-  const pct = t.contextWindow && tk.total_tokens ? Math.min(100, 100 * tk.total_tokens / t.contextWindow) : 0;
+  const ctxPct = t.contextUsed != null ? t.contextUsed : null;
   const proj = t.git ? `${esc(t.git.repo || t.project)} @ ${esc(t.git.branch)}` : esc(t.project || '');
+  const open = expanded.has(t.id);
 
   const prompt = t.firstUserText
     ? `<div class="prompt"><span class="lbl">session prompt</span><p>${esc(t.firstUserText)}</p></div>` : '';
@@ -202,66 +213,87 @@ function focusBlock(t) {
 
   const cmds = (t.commands || []).slice().reverse();      // latest first
   const stats = t.commandStats || [];
+  const promptLine = t.lastUserText || t.firstUserText || '';
 
   return `
-    <div class="focus">
-      <div class="row"><span class="dot ${t.status}"></span>
+    <div class="focus ${open ? 'expanded' : ''}" data-id="${t.id}">
+      <div class="fhead" onclick="toggleExp('${t.id}')">
+        <span class="caret">▸</span>
+        <span class="dot ${t.status}"></span>
         <span class="ftitle">${esc(name)}</span>
         <span class="badge">${ago(t.ageMs)}</span>
         ${t.taskActive ? '<span class="badge" style="color:var(--green)">● active turn</span>' : ''}
-        <a href="#" onclick="openDetail('${t.id}');return false" style="margin-left:auto;font-size:12px">full timeline →</a>
+        <span class="fhead-tok">${kfmtN(tk.total_tokens)} tok${ctxPct != null ? ` · ${ctxPct}% ctx` : ''} · ${t.toolCallCount} cmds · ${t.turnsCompleted}/${t.turnsStarted} turns</span>
+        <a href="#" onclick="openDetail('${t.id}');event.stopPropagation();return false" class="tl-link">full timeline →</a>
       </div>
-      <div class="fmeta">${proj}</div>
-      <div class="fpath">${esc(t.cwd || '')}</div>
-      <div class="row" style="margin-top:6px">${badges.join(' ')}</div>
-      ${prompt}${latest}
-      <div class="statline">
-        <span><b>${fmt(tk.total_tokens)}</b> total tokens</span>
-        <span><b>${fmt(t.contextWindow)}</b> ctx window (${pct.toFixed(0)}% full)</span>
-        <span>in <b>${fmt(tk.input_tokens)}</b></span>
-        <span>cached <b>${fmt(tk.cached_input_tokens)}</b></span>
-        <span>out <b>${fmt(tk.output_tokens)}</b></span>
-        <span>reasoning <b>${fmt(tk.reasoning_output_tokens)}</b></span>
-        <span><b>${t.toolCallCount}</b> cmds</span>
-        <span><b>${t.turnsCompleted}/${t.turnsStarted}</b> turns</span>
-      </div>
-      <div class="chartwrap">${consumptionChart(t.tokenSeries)}</div>
-      <div class="cols">
-        <div>
-          <p class="subh">Commands — latest first (Δ tokens ≈ consumed after that step)</p>
-          <div class="cmdscroll"><table><thead><tr>
-            <th>Time</th><th>Command</th><th class="num">Δ tok</th><th class="num">Total</th></tr></thead>
-            <tbody>${cmds.length ? cmds.map(c => `<tr>
-              <td class="num">${hhmmss(c.ts)}</td>
-              <td class="cmd" title="${esc(c.cmd)}">${esc(short(c.cmd, 140))}</td>
-              <td class="num">${c.delta ? '+' + fmt(c.delta) : '·'}</td>
-              <td class="num">${fmt(c.total)}</td></tr>`).join('')
-              : '<tr><td colspan="4" class="empty">No commands yet.</td></tr>'}
-            </tbody></table></div>
+      <div class="fmeta">${proj}${t.primaryModel ? ' · ' + esc(t.primaryModel) : ''}${t.effort ? ' · effort:' + esc(t.effort) : ''}${t.serviceTier ? ' · ' + esc(t.serviceTier) : ''}</div>
+      <div class="promptmini">${esc(promptLine)}</div>
+      <div class="chartwrap">${consumptionChart(t.tokenSeries, open ? 230 : 140)}</div>
+
+      <div class="fdetail">
+        <div class="fpath">${esc(t.cwd || '')}</div>
+        <div class="row" style="margin:6px 0">${badges.join(' ')}</div>
+        ${prompt}${latest}
+        <div class="statline">
+          <span><b>${fmt(tk.total_tokens)}</b> total tokens</span>
+          <span><b>${fmt(t.contextWindow)}</b> ctx window${ctxPct != null ? ` (${ctxPct}% of last request)` : ''}</span>
+          <span>in <b>${fmt(tk.input_tokens)}</b></span>
+          <span>cached <b>${fmt(tk.cached_input_tokens)}</b></span>
+          <span>out <b>${fmt(tk.output_tokens)}</b></span>
+          <span>reasoning <b>${fmt(tk.reasoning_output_tokens)}</b></span>
         </div>
-        <div>
-          <p class="subh">Consumption by base command (params ignored)</p>
-          <table><thead><tr>
-            <th>Base</th><th class="num">Runs</th><th class="num">Δ tokens</th><th class="num">Last</th></tr></thead>
-            <tbody>${stats.length ? stats.map(g => `<tr>
-              <td class="base">${esc(g.base)}</td>
-              <td class="num">${g.count}</td>
-              <td class="num">${fmt(g.tokens)}</td>
-              <td class="num">${hhmmss(g.lastTs)}</td></tr>`).join('')
-              : '<tr><td colspan="4" class="empty">–</td></tr>'}
-            </tbody></table>
+        <div class="cols">
+          <div>
+            <p class="subh">Commands — latest first (Δ tokens ≈ consumed after that step)</p>
+            <div class="cmdscroll"><table><thead><tr>
+              <th>Time</th><th>Command</th><th class="num">Δ tok</th><th class="num">Total</th></tr></thead>
+              <tbody>${cmds.length ? cmds.map(c => `<tr>
+                <td class="num">${hhmmss(c.ts)}</td>
+                <td class="cmd" title="${esc(c.cmd)}">${esc(short(c.cmd, 140))}</td>
+                <td class="num">${c.delta ? '+' + fmt(c.delta) : '·'}</td>
+                <td class="num">${fmt(c.total)}</td></tr>`).join('')
+                : '<tr><td colspan="4" class="empty">No commands yet.</td></tr>'}
+              </tbody></table></div>
+          </div>
+          <div>
+            <p class="subh">Consumption by base command (params ignored)</p>
+            <table><thead><tr>
+              <th>Base</th><th class="num">Runs</th><th class="num">Δ tokens</th><th class="num">Last</th></tr></thead>
+              <tbody>${stats.length ? stats.map(g => `<tr>
+                <td class="base">${esc(g.base)}</td>
+                <td class="num">${g.count}</td>
+                <td class="num">${fmt(g.tokens)}</td>
+                <td class="num">${hhmmss(g.lastTs)}</td></tr>`).join('')
+                : '<tr><td colspan="4" class="empty">–</td></tr>'}
+              </tbody></table>
+          </div>
         </div>
       </div>
     </div>`;
 }
 
+const expanded = new Set();
+function toggleExp(id) {
+  const box = document.querySelector('.focus[data-id="' + id + '"]');
+  if (!box) return;
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  if (lastSnap) render(lastSnap);
+}
+function kfmtN(v) {
+  if (v == null || isNaN(v)) return '–';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + 'k';
+  return Math.round(v);
+}
+
 // ---------------------------------------------------------------------------
 // consumption chart: cumulative total (area) + per-turn tokens (bars)
 // ---------------------------------------------------------------------------
-function consumptionChart(series) {
+function consumptionChart(series, H) {
+  H = H || 230;
   if (!series || series.length < 2)
-    return '<svg class="chart" viewBox="0 0 800 230"><text x="12" y="24">Not enough data yet…</text></svg>';
-  const W = 800, H = 230, PL = 58, PR = 12, PT = 12, PB = 22;
+    return `<svg class="chart" viewBox="0 0 800 ${H}" style="height:${H}px"><text x="12" y="24">Not enough data yet…</text></svg>`;
+  const W = 800, PL = 58, PR = 12, PT = 12, PB = 22;
   const iw = W - PL - PR, ih = H - PT - PB;
   const times = series.map(p => Date.parse(p.t) || 0);
   const t0 = times[0], t1 = times[times.length - 1] || t0 + 1;
@@ -294,7 +326,7 @@ function consumptionChart(series) {
   }
   const tlabel = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" style="height:${H}px" preserveAspectRatio="none">
     ${grid}${bars}
     <path d="${area}" fill="var(--accent)" opacity="0.16"/>
     <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>

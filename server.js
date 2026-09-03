@@ -98,6 +98,7 @@ function emptySummary(filePath) {
     tokenSeries: [],       // [{t, total, last}]
     lastTotalTokens: 0,
     lastReqTokens: 0,
+    lastReqInput: 0,
     messageCount: 0,
     userMessageCount: 0,
     toolCallCount: 0,
@@ -223,6 +224,7 @@ function applyLine(sum, raw) {
       sum.tokens = info.total_token_usage;
       sum.lastTotalTokens = info.total_token_usage.total_tokens || 0;
       sum.lastReqTokens = (info.last_token_usage && info.last_token_usage.total_tokens) || 0;
+      sum.lastReqInput = (info.last_token_usage && info.last_token_usage.input_tokens) || sum.lastReqInput;
       sum.tokenSeries.push({ t: ts, total: sum.lastTotalTokens, last: sum.lastReqTokens });
       if (sum.tokenSeries.length > 2000) sum.tokenSeries.shift();
     }
@@ -443,6 +445,9 @@ function decorate(sum, full) {
     contextWindow: sum.contextWindow,
     tokens: sum.tokens,
     lastReqTokens: sum.lastReqTokens,
+    lastReqInput: sum.lastReqInput,
+    contextUsed: sum.contextWindow && sum.lastReqInput
+      ? Math.min(100, Math.round(100 * sum.lastReqInput / sum.contextWindow)) : null,
     tokenSeries: full ? sum.tokenSeries.slice(-600) : sum.tokenSeries.slice(-60),
     messageCount: sum.messageCount,
     userMessageCount: sum.userMessageCount,
