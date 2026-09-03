@@ -99,12 +99,13 @@
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
   #live { display: flex; flex-direction: column; gap: 8px; max-width: 620px; }
-  .card-wrap { position: relative; }
+  .card-wrap { position: relative; margin-bottom: 8px; }
   .card-wrap .tree-tick { position: absolute; left: -13px; top: 20px; width: 11px; height: 1px; background: var(--border); }
   .card-wrap .tree-tick::before { content: ''; position: absolute; left: 0; bottom: 0; width: 1px; height: 26px; background: var(--border); }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px;
     cursor: pointer; }
   .card.sub { border-left: 3px solid var(--purple); background: var(--panel2); }
+  .card.synthetic { border-style: dashed; opacity: .8; padding: 8px 12px; }
   .card.running { border-left: 3px solid var(--green); }
   .card.idle { border-left: 3px solid var(--yellow); }
   .card.stale { opacity: .6; }
@@ -303,8 +304,7 @@ function render(snap) {
     `${threads.length} live · ${running.length} running · updated ${new Date(snap.now).toLocaleTimeString()}${wk}`;
 
   renderUsage(snap);
-  renderRunning(threads, running);
-  renderLiveGrid(threads);
+  renderLiveTree(threads);
 }
 
 function winShort(mins) {
@@ -350,33 +350,63 @@ function renderUsage(snap) {
 }
 
 // ---------------------------------------------------------------------------
-// Running-now focus panel
+// Live tree — one hierarchy spanning "prompts running now" + "other live"
 // ---------------------------------------------------------------------------
-let runningIds = [];   // ids shown in the running section (excluded from the grid)
 let runSort = 'started';   // 'started' | 'tokens', both descending
+let lastRunOrder = [];     // root ids in the order last rendered
 
 function runCmp(a, b) {
   if (runSort === 'tokens') return (b.cumReqTokens || 0) - (a.cumReqTokens || 0);
   return (b.startedAt || '').localeCompare(a.startedAt || '') || (b.mtime - a.mtime);
 }
 
-let lastRunOrder = [];   // ids in the order last rendered
+function renderLiveTree(threads) {
+  const nodes = new Map(threads.map(t => [t.id, t]));
 
-function renderRunning(threads, running) {
-  const el = $('#running');
-  // one panel per active agent: everything running or mid-turn, plus most-recent idle if nothing else
-  let cands = threads.filter(t => t.status === 'running' || t.taskActive);
-  if (!cands.length) {
-    const idle = threads.filter(t => t.status === 'idle').sort((a, b) => b.mtime - a.mtime);
-    if (idle.length) cands = [idle[0]];
-  }
-  if (!cands.length) {
-    lastRunOrder = []; runningIds = [];
-    el.innerHTML = '<div class="empty">No session is currently running.</div>';
-    return;
+  // subagents whose parent isn't in the live window: rebuild the missing
+  // ancestors from `lineage` so a guardian is never shown as a top-level root
+  for (const t of threads) {
+    if (!t.parentId || nodes.has(t.parentId) || !t.lineage || !t.lineage.length) continue;
+    let prevId = null;
+    for (const l of t.lineage) {
+      if (!nodes.has(l.id)) {
+        nodes.set(l.id, {
+          id: l.id, title: l.title || null, project: l.project || null,
+          agentKind: (l.kind && l.kind !== 'main') ? l.kind : null,
+          isSubagent: !!(l.kind && l.kind !== 'main'),
+          synthetic: true, status: 'stale', taskActive: false,
+          mtime: t.mtime, startedAt: t.startedAt, parentId: prevId, lineage: [],
+        });
+      }
+      prevId = l.id;
+    }
   }
 
-  // sibling comparator: hold order steady while a panel is expanded
+  const kids = new Map();
+  const roots = [];
+  for (const t of nodes.values()) {
+    const pid = t.parentId && nodes.has(t.parentId) ? t.parentId : null;
+    if (pid) (kids.get(pid) || kids.set(pid, []).get(pid)).push(t);
+    else roots.push(t);
+  }
+
+  const active = (t) => t.status === 'running' || t.taskActive;
+  const subtreeActive = (t, seen = new Set()) => {
+    if (seen.has(t.id)) return false; seen.add(t.id);
+    return active(t) || (kids.get(t.id) || []).some(c => subtreeActive(c, seen));
+  };
+
+  // featured roots = those whose subtree has an active agent; fall back to the
+  // single most-recent real root so the panel is never empty
+  let featured = roots.filter(r => subtreeActive(r));
+  if (!featured.length) {
+    const real = roots.filter(r => !r.synthetic).sort((a, b) => b.mtime - a.mtime);
+    if (real.length) featured = [real[0]];
+  }
+  const featuredSet = new Set(featured.map(r => r.id));
+  const other = roots.filter(r => !featuredSet.has(r.id));
+
+  // sibling order; hold steady while a panel is expanded
   const pos = new Map(lastRunOrder.map((id, i) => [id, i]));
   const frozen = expanded.size && lastRunOrder.length;
   const cmp = (a, b) => {
@@ -387,34 +417,40 @@ function renderRunning(threads, running) {
     }
     return runCmp(a, b);
   };
-
-  // build the tree over the running set
-  const inSet = new Map(cands.map(t => [t.id, t]));
-  const kids = new Map();
-  const roots = [];
-  for (const t of cands) {
-    const pid = t.parentId && inSet.has(t.parentId) ? t.parentId : null;
-    if (pid) (kids.get(pid) || kids.set(pid, []).get(pid)).push(t);
-    else roots.push(t);
-  }
-  roots.sort(cmp);
+  featured.sort(cmp);
+  other.sort((a, b) => b.mtime - a.mtime);
   for (const arr of kids.values()) arr.sort(cmp);
 
-  const ordered = [];
-  const seen = new Set();
-  const walk = (t, d) => {
-    if (seen.has(t.id)) return;
-    seen.add(t.id);
-    ordered.push({ t, d });
-    for (const c of (kids.get(t.id) || [])) walk(c, d + 1);
-  };
-  roots.forEach(r => walk(r, 0));
+  lastRunOrder = featured.map(r => r.id);
 
-  lastRunOrder = ordered.map(x => x.t.id);
-  runningIds = lastRunOrder.slice();
-  el.innerHTML = ordered.map(({ t, d }) =>
-    `<div class="focus-wrap"${d ? ` style="margin-left:${d * 26}px"` : ''}>${d ? '<span class="tree-tick"></span>' : ''}${focusBlock(t, d)}</div>`
-  ).join('');
+  const seen = new Set();
+  const node = (t, d) => {
+    if (seen.has(t.id)) return ''; seen.add(t.id);
+    let self;
+    if (t.synthetic) self = wrap(syntheticRow(t), d);
+    else if (d === 0) self = `<div class="focus-wrap" data-root="${t.id}">${focusBlock(t, 0)}</div>`;
+    else self = wrap(miniCard(t, d), d);
+    const children = (kids.get(t.id) || []).map(c => node(c, d + 1)).join('');
+    return self + children;
+  };
+  const wrap = (inner, d) =>
+    `<div class="card-wrap"${d ? ` style="margin-left:${d * 24}px"` : ''}>${d ? '<span class="tree-tick"></span>' : ''}${inner}</div>`;
+
+  $('#running').innerHTML = featured.length
+    ? featured.map(r => node(r, 0)).join('')
+    : '<div class="empty">No session is currently running.</div>';
+  const otherHtml = other.map(r => node(r, 0)).join('');
+  $('#live').innerHTML = otherHtml || '<div class="empty">Nothing else active in the last 15 minutes.</div>';
+}
+
+function syntheticRow(t) {
+  return `<div class="card stale synthetic" onclick="openDetail('${t.id}')">
+    <div class="row"><span class="dot stale"></span>
+      <span class="title">${esc(t.title || t.id.slice(0, 8))}</span>
+      ${t.agentKind ? `<span class="badge agent">${esc(t.agentKind)}</span>` : ''}
+      <span class="badge">not in live window</span></div>
+    <div class="meta">${esc(t.project || '')} · parent of the agents below — open →</div>
+  </div>`;
 }
 
 function lineageCrumb(l) {
@@ -592,32 +628,6 @@ function kfmt(v) {
   return Math.round(v);
 }
 
-// ---------------------------------------------------------------------------
-// Other live sessions grid
-// ---------------------------------------------------------------------------
-function renderLiveGrid(threads) {
-  const rest = threads.filter(t => !runningIds.includes(t.id));
-  const el = $('#live');
-  if (!rest.length) { el.innerHTML = '<div class="empty">Nothing else active in the last 15 minutes.</div>'; return; }
-  const inSet = new Set(rest.map(t => t.id));
-  const kids = {}, roots = [];
-  for (const t of rest) {
-    if (t.parentId && inSet.has(t.parentId)) (kids[t.parentId] = kids[t.parentId] || []).push(t);
-    else roots.push(t);
-  }
-  const bym = (a, b) => b.mtime - a.mtime;
-  roots.sort(bym);
-  const ordered = [];
-  const seen = new Set();
-  const walk = (t, d) => {
-    if (seen.has(t.id)) return; seen.add(t.id);
-    ordered.push({ t, d });
-    for (const k of (kids[t.id] || []).sort(bym)) walk(k, d + 1);
-  };
-  roots.forEach(r => walk(r, 0));
-  el.innerHTML = ordered.map(({ t, d }) => miniCard(t, d)).join('');
-}
-
 function miniCard(t, depth) {
   const d = depth || 0;
   const cls = ['card', t.status];
@@ -632,18 +642,17 @@ function miniCard(t, depth) {
   if (t.effort) badges.push(`<span class="badge">effort:${esc(t.effort)}</span>`);
   if (d && (t.agentKind || t.agentNickname)) badges.push(`<span class="badge agent">↳ ${esc(t.agentKind || t.agentNickname)}</span>`);
   const parent = !d && t.lineage && t.lineage.length ? t.lineage[t.lineage.length - 1] : null;
-  return `<div class="card-wrap"${d ? ` style="margin-left:${d * 24}px"` : ''}>${d ? '<span class="tree-tick"></span>' : ''}
-    <div class="${cls.join(' ')}" onclick="openDetail('${t.id}')">
+  return `<div class="${cls.join(' ')}" onclick="openDetail('${t.id}')">
     <div class="row"><span class="dot ${t.status}"></span><span class="title">${esc(name)}</span>
-      <span class="badge">${ago(t.ageMs)}</span></div>
+      <span class="badge">${ago(t.ageMs)}</span>${t.taskActive ? ' <span class="badge" style="color:var(--green)">● active</span>' : ''}</div>
     <div class="meta">${proj}</div>
     ${parent ? `<div class="lineage" style="padding-left:0">spawned by ${lineageCrumb(parent)}</div>` : ''}
     <div class="row" style="margin-top:5px">${badges.join(' ')}</div>
     <div class="bar"><i style="width:${pct}%"></i></div>
-    <div class="tok"><span>total ${fmt(tk.total_tokens)}</span><span>${t.toolCallCount} cmds</span>
+    <div class="tok"><span>${kfmtN(t.cumReqTokens || tk.total_tokens)} tok</span><span>${t.toolCallCount} cmds</span>
       <span>${t.messageCount} msgs</span></div>
     ${t.lastExec ? `<div class="tok hoverable" data-tip-id="${t.id}" style="margin-top:4px;color:var(--green)">$ ${esc(short(t.lastExec.first, 90))}</div>` : ''}
-  </div></div>`;
+  </div>`;
 }
 
 // ---------------------------------------------------------------------------
