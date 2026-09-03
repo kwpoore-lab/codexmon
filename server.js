@@ -1073,6 +1073,56 @@ function economy(sinceMs, includeSub) {
   };
 }
 
+// Time-series for one base command: output tokens / calls / truncated / Δ tokens
+// per day|week|month bucket, plus per-invocation and per-polled-process series.
+function commandTrend(base, period, includeSub) {
+  const recs = [...rollupCache.sessions.values()].filter((r) =>
+    r.startedAt && (includeSub || !r.isSubagent));
+  const buckets = new Set();
+  const series = { outTokens: {}, calls: {}, truncated: {}, delta: {} };
+  const bump = (k, b, v) => { series[k][b] = (series[k][b] || 0) + v; };
+  const sampMap = new Map();
+  const pollMap = new Map();
+  const isPoll = ['write_stdin', 'wait', 'wait_agent', 'exec_command'].includes(base);
+  let totals = { outTokens: 0, calls: 0, truncated: 0, delta: 0, sessions: 0 };
+
+  for (const r of recs) {
+    const g = (r.outByBase || {})[base];
+    const dc = (r.cmds || []).find((c) => c.base === base);
+    if (!g && !dc) continue;
+    const b = bucketKey(period, r.startedAt);
+    buckets.add(b);
+    totals.sessions++;
+    if (g) {
+      bump('outTokens', b, g.tokens); bump('calls', b, g.calls); bump('truncated', b, g.truncated);
+      totals.outTokens += g.tokens; totals.calls += g.calls; totals.truncated += g.truncated;
+    }
+    if (dc) { bump('delta', b, dc.tokens); totals.delta += dc.tokens; }
+
+    for (const s of (r.samples && r.samples[base]) || []) {
+      const e = sampMap.get(s.cmd) || (sampMap.set(s.cmd, { cmd: s.cmd, count: 0, out: 0, trunc: 0, per: {} }).get(s.cmd));
+      e.count += s.count; e.out += s.out; e.trunc += s.trunc;
+      const pb = e.per[b] || (e.per[b] = { outTokens: 0, calls: 0, truncated: 0 });
+      pb.outTokens += s.out; pb.calls += s.count; pb.truncated += s.trunc;
+    }
+    if (isPoll) {
+      for (const pt of r.pollTargets || []) {
+        const e = pollMap.get(pt.cmd) || (pollMap.set(pt.cmd, { cmd: pt.cmd, count: 0, out: 0, per: {} }).get(pt.cmd));
+        e.count += pt.count; e.out += pt.out || 0;
+        const pb = e.per[b] || (e.per[b] = { outTokens: 0, calls: 0 });
+        pb.outTokens += pt.out || 0; pb.calls += pt.count;
+      }
+    }
+  }
+  return {
+    base, period,
+    buckets: [...buckets].sort(),
+    series, totals,
+    samples: [...sampMap.values()].sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 15),
+    pollTargets: [...pollMap.values()].sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 12),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // SSE plumbing
 // ---------------------------------------------------------------------------
@@ -1185,6 +1235,17 @@ const server = http.createServer((req, res) => {
     const includeSub = url.searchParams.get('subagents') !== '0';   // default: include
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
     return json(res, 200, economy(sinceMs, includeSub));
+  }
+
+  if (pathn === '/api/command') {
+    ensureRollups();
+    const base = url.searchParams.get('base');
+    const period = ['day', 'week', 'month'].includes(url.searchParams.get('period'))
+      ? url.searchParams.get('period') : 'week';
+    const includeSub = url.searchParams.get('subagents') !== '0';
+    if (!base) return json(res, 400, { error: 'base required' });
+    if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
+    return json(res, 200, commandTrend(base, period, includeSub));
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });

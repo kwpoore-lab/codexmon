@@ -153,6 +153,30 @@
   .spark rect { fill: var(--accent); }
   .lbl-row td { font-size: 11px; color: var(--dim); font-family: var(--mono); }
 
+  /* HTML bar chart (no SVG text distortion) */
+  .bchart { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px 4px; margin: 8px 0; }
+  .bc-title { font: 11px/1.4 var(--mono); color: var(--dim); margin-bottom: 5px; }
+  .bc-title .bc-l2 { color: var(--purple); }
+  .bc-body { display: flex; gap: 6px; }
+  .bc-yax { display: flex; flex-direction: column; justify-content: space-between; width: 46px;
+    height: 150px; font: 10px/1 var(--mono); color: var(--dim); text-align: right; }
+  .bc-plot { position: relative; flex: 1; display: flex; align-items: flex-end; gap: 1px; height: 150px;
+    border-bottom: 1px solid var(--border);
+    background: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--border) calc(25% - 1px), var(--border) 25%); }
+  .bc-bar { flex: 1 1 0; min-width: 0; min-height: 1px; background: var(--accent); opacity: .75;
+    border-radius: 1px 1px 0 0; }
+  .bc-bar:hover { opacity: 1; }
+  .bc-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .bc-line polyline { fill: none; stroke: var(--purple); stroke-width: 1.4; opacity: .55;
+    vector-effect: non-scaling-stroke; }
+  .bc-xax { display: flex; gap: 1px; margin: 3px 0 0 52px; font: 9.5px/1 var(--mono); color: var(--dim); }
+  .bc-xax span { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: visible; }
+  .ct-ctrls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
+  .ct-ctrls .seg button { padding: 3px 9px; font-size: 11px; }
+  .cmdlink { cursor: pointer; border-bottom: 1px dotted currentColor; }
+  .cmdlink:hover { color: var(--fg); }
+
   /* economy */
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 4px 0 18px; }
   .ecard { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
@@ -538,7 +562,7 @@ function focusBlock(t, depth) {
             <table><thead><tr>
               <th>Base</th><th class="num">Runs</th><th class="num">Δ tokens</th><th class="num">Last</th></tr></thead>
               <tbody>${stats.length ? stats.map(g => `<tr>
-                <td class="base">${esc(g.base)}</td>
+                <td class="base"><span class="cmdlink" data-cmd="${esc(g.base)}">${esc(g.base)}</span></td>
                 <td class="num">${g.count}</td>
                 <td class="num">${fmt(g.tokens)}</td>
                 <td class="num">${hhmmss(g.lastTs)}</td></tr>`).join('')
@@ -819,7 +843,7 @@ async function openDetail(id) {
     <div class="chartwrap">${consumptionChart(s.tokenSeries)}</div>
     ${stats.length ? `<p class="subh">Consumption by base command</p>
       <table><thead><tr><th>Base</th><th class="num">Runs</th><th class="num">Δ tokens</th></tr></thead>
-      <tbody>${stats.map(g => `<tr><td class="base">${esc(g.base)}</td><td class="num">${g.count}</td><td class="num">${fmt(g.tokens)}</td></tr>`).join('')}</tbody></table>` : ''}
+      <tbody>${stats.map(g => `<tr><td class="base"><span class="cmdlink" data-cmd="${esc(g.base)}">${esc(g.base)}</span></td><td class="num">${g.count}</td><td class="num">${fmt(g.tokens)}</td></tr>`).join('')}</tbody></table>` : ''}
     <h2 style="border:0">Timeline (${r.events.length})</h2>
     ${r.events.map(evRow).join('')}`;
 }
@@ -903,8 +927,9 @@ async function loadTrends() {
   renderTrends();
 }
 
-function tspark(per, buckets, key) {
-  const vals = buckets.map(b => (per[b] && per[b][key]) || 0);
+function tspark(per, buckets, keyOrFn) {
+  const f = typeof keyOrFn === 'function' ? keyOrFn : (o => (o && o[keyOrFn]) || 0);
+  const vals = buckets.map(b => f(per[b], b) || 0);
   const max = Math.max(...vals, 1);
   const W = 120, H = 24, n = vals.length, bw = W / n;
   const bars = vals.map((v, i) =>
@@ -912,26 +937,32 @@ function tspark(per, buckets, key) {
   return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${bars}</svg>`;
 }
 
-function tbarChart(buckets, valueFn, label) {
+// HTML/CSS bar chart — responsive, no SVG text stretching.
+// opts.line = secondary series (drawn as a faint polyline), opts.lineLabel = its name
+function tbarChart(buckets, valueFn, label, opts = {}) {
+  if (!buckets.length) return '<div class="bchart"><div class="bc-title">no data</div></div>';
   const vals = buckets.map(valueFn);
   const max = Math.max(...vals, 1);
-  const W = 900, H = 150, PB = 20, PL = 46, iw = W - PL - 8, ih = H - PB - 6;
-  const bw = iw / buckets.length;
-  const bars = vals.map((v, i) =>
-    `<rect x="${(PL + i * bw + 1).toFixed(1)}" y="${(6 + ih - (v / max) * ih).toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${((v / max) * ih).toFixed(1)}" fill="var(--accent)" opacity="0.75"/>`).join('');
-  let grid = '';
-  for (let g = 0; g <= 3; g++) {
-    const val = max * g / 3, y = 6 + ih - (val / max) * ih;
-    grid += `<line x1="${PL}" y1="${y.toFixed(1)}" x2="${W - 8}" y2="${y.toFixed(1)}" stroke="var(--border)"/>`;
-    grid += `<text x="${PL - 5}" y="${(y + 3).toFixed(1)}" text-anchor="end">${kfmt(val)}</text>`;
+  const step = Math.max(1, Math.ceil(buckets.length / 16));
+  let lineSvg = '';
+  const line = opts.line;
+  if (line && line.length === buckets.length && line.some(v => v)) {
+    const lmax = Math.max(...line, 1);
+    const n = Math.max(1, buckets.length - 1);
+    const pts = line.map((v, i) => `${(i / n * 100).toFixed(2)},${(96 - v / lmax * 92).toFixed(2)}`).join(' ');
+    lineSvg = `<svg class="bc-line" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;
   }
-  const step = Math.ceil(buckets.length / 12);
-  const xl = buckets.map((b, i) => (i % step === 0)
-    ? `<text x="${(PL + i * bw + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${b.slice(5)}</text>` : '').join('');
-  return `<div class="chartwrap"><svg class="chart" viewBox="0 0 ${W} ${H}" style="height:${H}px" preserveAspectRatio="none">
-    ${grid}${bars}${xl}
-    ${label ? `<text x="${PL}" y="12">${esc(label)}</text>` : ''}
-  </svg></div>`;
+  return `<div class="bchart">
+    ${label ? `<div class="bc-title">${esc(label)}${opts.lineLabel ? ` · <span class="bc-l2">${esc(opts.lineLabel)} (line)</span>` : ''}</div>` : ''}
+    <div class="bc-body">
+      <div class="bc-yax">${[1, 0.75, 0.5, 0.25, 0].map(f => `<span>${kfmt(max * f)}</span>`).join('')}</div>
+      <div class="bc-plot">
+        ${vals.map((v, i) => `<div class="bc-bar" style="height:${(v / max * 100).toFixed(1)}%" title="${esc(buckets[i])} — ${fmt(v)}"></div>`).join('')}
+        ${lineSvg}
+      </div>
+    </div>
+    <div class="bc-xax">${buckets.map((b, i) => `<span>${i % step === 0 ? esc(b.length > 7 ? b.slice(5) : b) : ''}</span>`).join('')}</div>
+  </div>`;
 }
 
 function renderTrends() {
@@ -991,7 +1022,8 @@ function renderTrendTables() {
     ${trendCmdRows.map((r, i) => {
       const open = tExpanded.cmd.has(r.base);
       return `<tr class="trow" data-tkind="cmd" data-ti="${i}" style="cursor:pointer">
-        <td class="base">${open ? '▾ ' : '▸ '}${esc(r.base)}</td>
+        <td class="base">${open ? '▾ ' : '▸ '}${esc(r.base)}
+          <span class="cmdlink" data-cmd="${esc(r.base)}" title="open command trends" style="margin-left:6px;border:0">⤢</span></td>
         <td class="num">${fmt(r.total)}</td><td class="num">${fmt(r.count)}</td>
         <td>${tspark(r.per, B, 'tokens')}</td></tr>`
         + (open ? trendDetailRows(r, B) : '');
@@ -1014,6 +1046,7 @@ function renderTrendTables() {
 }
 
 document.addEventListener('click', (e) => {
+  if (e.target.closest('.cmdlink')) return;   // handled by the command-link listener
   const tr = e.target.closest('.trow');
   if (tr) {
     const kind = tr.dataset.tkind;
@@ -1076,25 +1109,137 @@ const CMD_DESC = {
   wc: 'Counts lines/words — tiny output on its own, but often run in a batch that reads files too.',
 };
 
+// ---------------------------------------------------------------------------
+// per-command trends over time (inline in Economy + in the side overlay)
+// ---------------------------------------------------------------------------
+const CT_METRICS = [
+  { k: 'delta', label: 'Δ tokens' },
+  { k: 'outTokens', label: 'Output tokens' },
+  { k: 'calls', label: 'Calls' },
+  { k: 'avgOut', label: 'Avg out/call' },
+  { k: 'truncated', label: 'Truncated' },
+];
+const ctState = new Map();   // base -> { period, metric, sub, data, loading }
+
+function ctGet(base) {
+  if (!ctState.has(base)) ctState.set(base, { period: 'week', metric: 'delta', sub: true, data: null, loading: false });
+  return ctState.get(base);
+}
+async function ctLoad(base) {
+  const s = ctGet(base);
+  s.loading = true;
+  const r = await fetch(`/api/command?base=${encodeURIComponent(base)}&period=${s.period}&subagents=${s.sub ? 1 : 0}`).then(x => x.json());
+  s.loading = false;
+  if (!r.building) s.data = r;
+  ctRerender(base);
+}
+function ctRerender(base) {
+  document.querySelectorAll(`[data-ct-host="${cssEsc(base)}"]`).forEach(el => { el.innerHTML = ctPanel(base); });
+}
+const cssEsc = (s) => String(s).replace(/["\\]/g, '\\$&');
+
+function ctMetricVal(d, b, metric) {
+  const S = d.series;
+  if (metric === 'avgOut') return (S.calls[b] ? (S.outTokens[b] || 0) / S.calls[b] : 0);
+  return (S[metric] && S[metric][b]) || 0;
+}
+function ctPerFn(metric) {
+  if (metric === 'avgOut') return (o) => (o && o.calls ? o.outTokens / o.calls : 0);
+  if (metric === 'delta') return (o) => (o && o.calls) || 0;   // no per-sample delta — show runs
+  return (o) => (o && o[metric]) || 0;
+}
+
+function ctPanel(base) {
+  const s = ctGet(base);
+  const seg = (name, cur, opts) => `<span class="seg" data-ct-seg="${name}">${opts.map(o =>
+    `<button data-ct-${name}="${o.k}" class="${o.k === cur ? 'on' : ''}">${esc(o.label)}</button>`).join('')}</span>`;
+  const ctrls = `<div class="ct-ctrls" data-ct-base="${esc(base)}">
+    ${seg('period', s.period, [{ k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
+    ${seg('metric', s.metric, CT_METRICS)}
+    <label style="font-size:11px;color:var(--dim)"><input type="checkbox" data-ct-sub ${s.sub ? 'checked' : ''}> subagents</label>
+  </div>`;
+
+  if (s.loading || !s.data) return ctrls + '<div class="empty">Loading trend…</div>';
+  const d = s.data;
+  if (!d.buckets.length) return ctrls + '<p class="blurb">No time-series data for this command.</p>';
+
+  const B = d.buckets;
+  const mLabel = (CT_METRICS.find(m => m.k === s.metric) || {}).label;
+  const perB = {}; B.forEach(b => { perB[b] = ctMetricVal(d, b, s.metric); });
+  const line = s.metric === 'calls' ? null : B.map(b => d.series.calls[b] || 0);
+  const pf = ctPerFn(s.metric);
+
+  const t = d.totals;
+  const grand = `<div class="tgrand" style="margin:6px 0 8px">
+    <span><b>${fmt(t.delta)}</b> Δ tokens</span>
+    <span><b>${fmt(t.outTokens)}</b> output tokens</span>
+    <span><b>${fmt(t.calls)}</b> calls</span>
+    <span><b>${fmt(t.truncated)}</b> truncated</span>
+    <span style="margin-left:auto">${B.length} ${s.period}s · ${fmt(t.sessions)} sessions</span>
+  </div>`;
+
+  const sampRows = (rows, cmdCol) => rows.map(r => `<tr>
+    <td class="cmd" title="${esc(r.cmd)}">${esc(short(r.cmd, 130))}</td>
+    <td class="num">${fmt(r.count)}</td>
+    <td class="num">${fmt(r.out)}</td>
+    <td class="trend-cell">${tspark(r.per, B, pf)}</td></tr>`).join('');
+
+  const realSamples = (d.samples || []).filter(x => x.cmd && x.cmd !== base && x.cmd.length > base.length + 1);
+  const samplesTbl = realSamples.length ? `
+    <p class="subh" style="margin-top:10px">Actual invocations — ${esc(mLabel.toLowerCase())} trend</p>
+    <table><thead><tr><th>Command</th><th class="num">Runs</th><th class="num">~Out tok</th><th class="trend-cell">Trend</th></tr></thead>
+    <tbody>${sampRows(realSamples)}</tbody></table>` : '';
+  const pollsTbl = (d.pollTargets || []).length ? `
+    <p class="subh" style="margin-top:10px">Processes being polled — ${esc(mLabel.toLowerCase())} trend</p>
+    <table><thead><tr><th>Process</th><th class="num">Polls</th><th class="num">~Tokens</th><th class="trend-cell">Trend</th></tr></thead>
+    <tbody>${sampRows(d.pollTargets)}</tbody></table>` : '';
+
+  return ctrls + grand
+    + tbarChart(B, b => perB[b], mLabel + ' per ' + s.period, line ? { line, lineLabel: 'calls' } : {})
+    + samplesTbl + pollsTbl;
+}
+
+// inline block for an expanded Economy "By command" row
 function cmdDetail(c) {
   const desc = CMD_DESC[c.base];
-  const polls = c.pollTargets && c.pollTargets.length
-    ? `<p class="subh" style="margin-top:8px">Processes being polled — tokens pulled into context</p>
-       <table><thead><tr><th>Process</th><th class="num">Polls</th><th class="num">~Tokens</th></tr></thead>
-       <tbody>${c.pollTargets.map(p => `<tr>
-         <td class="cmd" title="${esc(p.cmd)}">${esc(short(p.cmd, 120))}</td>
-         <td class="num">${fmt(p.count)}</td><td class="num">${fmt(p.out)}</td></tr>`).join('')}</tbody></table>` : '';
-  const realSamples = (c.samples || []).filter(s => s.cmd && s.cmd !== c.base && s.cmd.length > c.base.length + 1);
-  const samples = realSamples.length
-    ? `<p class="subh" style="margin-top:8px">Actual invocations (top by output)</p>
-       <table><thead><tr><th>Command</th><th class="num">Runs</th><th class="num">~Out tok</th><th class="num">Trunc</th></tr></thead>
-       <tbody>${realSamples.map(s => `<tr>
-         <td class="cmd" title="${esc(s.cmd)}">${esc(short(s.cmd, 150))}</td>
-         <td class="num">${s.count}</td><td class="num">${fmt(s.out)}</td>
-         <td class="num">${s.trunc || '·'}</td></tr>`).join('')}</tbody></table>` : '';
-  return `${desc ? `<p class="blurb" style="margin:2px 0 6px">${desc}</p>` : ''}${polls}${samples}
-    ${!desc && !samples && !polls ? '<p class="blurb">No further detail captured.</p>' : ''}`;
+  if (!ctGet(c.base).data && !ctGet(c.base).loading) ctLoad(c.base);
+  return `${desc ? `<p class="blurb" style="margin:2px 0 8px">${desc}</p>` : ''}
+    <div data-ct-host="${esc(c.base)}">${ctPanel(c.base)}</div>`;
 }
+
+// side-overlay view, reached by clicking a command name anywhere
+function openCommand(base) {
+  $('#overlay').classList.add('on');
+  if (!ctGet(base).data && !ctGet(base).loading) ctLoad(base);
+  const desc = CMD_DESC[base];
+  $('#detailBody').innerHTML = `
+    <h3 style="margin:0 0 4px">${esc(base)}</h3>
+    ${desc ? `<p class="blurb" style="margin:2px 0 8px">${desc}</p>` : ''}
+    <div data-ct-host="${esc(base)}">${ctPanel(base)}</div>`;
+}
+
+// segmented-control + checkbox handling for command-trend panels
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ct-period],[data-ct-metric]');
+  if (!b) return;
+  const host = b.closest('.ct-ctrls');
+  const base = host && host.dataset.ctBase;
+  if (!base) return;
+  const s = ctGet(base);
+  if (b.dataset.ctPeriod && b.dataset.ctPeriod !== s.period) { s.period = b.dataset.ctPeriod; s.data = null; ctRerender(base); ctLoad(base); }
+  else if (b.dataset.ctMetric) { s.metric = b.dataset.ctMetric; ctRerender(base); }
+});
+document.addEventListener('change', (e) => {
+  if (!e.target.matches('[data-ct-sub]')) return;
+  const base = e.target.closest('.ct-ctrls').dataset.ctBase;
+  const s = ctGet(base);
+  s.sub = e.target.checked; s.data = null; ctRerender(base); ctLoad(base);
+});
+// clickable command names → overlay
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.cmdlink');
+  if (el) { e.stopPropagation(); openCommand(el.dataset.cmd); }
+});
 
 async function loadEconomy() {
   const el = $('#economy');
