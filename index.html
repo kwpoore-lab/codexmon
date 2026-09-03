@@ -238,7 +238,7 @@
     <h2>History
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
         <span class="seg" id="histSeg">
-          <button data-p="hour">15m</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+          <button data-p="hour">Hour</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
         </span>
         <select id="periodSel" style="margin-left:10px"></select>
         <select id="histModel" class="facet" title="model"></select>
@@ -254,7 +254,7 @@
     <h2>Trends
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
         <span class="seg" id="periodSeg">
-          <button data-p="hour">15m</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
+          <button data-p="hour">Hour</button><button data-p="day" class="on">Day</button><button data-p="week">Week</button><button data-p="month">Month</button>
         </span>
         <select id="trModel" class="facet" title="model"></select>
         <select id="trEffort" class="facet" title="effort"></select>
@@ -937,8 +937,9 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetai
 // trends
 // ---------------------------------------------------------------------------
 let trendPeriod = 'day';
-const perLbl = (p) => p === 'hour' ? '15m' : p;
-const perLblN = (p) => p === 'hour' ? '15m slots' : p + 's';
+// "Hour" filter renders 15-minute bars
+const perLbl = (p) => p === 'hour' ? 'hour (15m bars)' : p;
+const perLblN = (p) => p === 'hour' ? '15m bars' : p + 's';
 let trendSub = false;
 let trendData = null;
 let trendPoll = null;
@@ -1217,7 +1218,7 @@ function ctPanel(base) {
   const facSel = (kind, cur, vals, allLabel) => `<select data-ct-${kind} class="facet">
     <option value="">${allLabel}</option>${vals.map(v => `<option value="${attr(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
   const ctrls = `<div class="ct-ctrls" data-ct-base="${esc(base)}">
-    ${seg('period', s.period, [{ k: 'hour', label: '15m' }, { k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
+    ${seg('period', s.period, [{ k: 'hour', label: 'Hour' }, { k: 'day', label: 'Day' }, { k: 'week', label: 'Week' }, { k: 'month', label: 'Month' }])}
     ${seg('metric', s.metric, CT_METRICS)}
     ${facSel('model', s.model, fac.models, 'all models')}
     ${facSel('effort', s.effort, fac.efforts, 'all efforts')}
