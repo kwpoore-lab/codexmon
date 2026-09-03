@@ -19,6 +19,8 @@
   header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
     border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 5; }
   header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  header h1 a { color: var(--fg); text-decoration: none; }
+  header h1 a:hover { color: var(--accent); text-decoration: none; }
   header .stat { color: var(--dim); font-size: 12px; margin-left: auto; }
   #tabs { display: flex; gap: 4px; }
   #tabs a { color: var(--dim); font-size: 13px; padding: 5px 12px; border-radius: 6px; text-decoration: none; }
@@ -203,7 +205,7 @@
 </head>
 <body>
 <header>
-  <h1>codexmon</h1>
+  <h1><a href="https://github.com/kwpoore-lab/codexmon" target="_blank" rel="noopener">codexmon</a></h1>
   <nav id="tabs">
     <a href="#running" data-tab="running" class="on">Prompts running now</a>
     <a href="#history" data-tab="history">History</a>
