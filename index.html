@@ -653,7 +653,7 @@ function renderHistory() {
     ${rows.map(t => {
       const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
       const kind = t.isSubagent ? `subagent${t.agentNickname ? ' · ' + esc(t.agentNickname) : ''}` : 'main';
-      const models = [t.model, t.autoReview ? '+review' : null].filter(Boolean).join(' ');
+      const models = [t.model, t.effort ? 'effort:' + t.effort : null, t.autoReview ? '+review' : null].filter(Boolean).join(' ');
       return `<tr onclick="openDetail('${t.id}')" style="cursor:pointer">
         <td class="num">${dateHM(t.startedAt)}</td>
         <td>${esc(name)}</td>

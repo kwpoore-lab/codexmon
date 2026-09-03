@@ -643,7 +643,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 9;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 10;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -668,7 +668,7 @@ function scanSession(file, st) {
     const rec = {
       id: fileUuid(file), file, mtime: st.mtimeMs, size: st.size,
       startedAt: null, prompt: null, project: null, isSubagent: false,
-      model: null, repo: null, branch: null, agentNickname: null, depth: 0,
+      model: null, effort: null, repo: null, branch: null, agentNickname: null, depth: 0,
       autoReview: false, compactions: 0, originator: null,
       totals: { total: 0, input: 0, output: 0, cached: 0, reasoning: 0, billed: 0 },
       cmds: [],
@@ -716,6 +716,7 @@ function scanSession(file, st) {
       } else if (o.type === 'turn_context') {
         if (p.model === 'codex-auto-review') rec.autoReview = true;
         else if (p.model && !rec.model) rec.model = p.model;
+        if (p.effort && !rec.effort) rec.effort = p.effort;
       } else if (o.type === 'event_msg' && p.type === 'token_count' && p.info && p.info.total_token_usage) {
         const u = p.info.total_token_usage;
         if (lastTotal > 1000 && (u.total_tokens || 0) < lastTotal * 0.5) rec.compactions++;
@@ -1030,7 +1031,7 @@ const server = http.createServer((req, res) => {
         prompt: r.prompt,
         project: r.project,
         repo: r.repo, branch: r.branch,
-        model: r.model, autoReview: r.autoReview,
+        model: r.model, effort: r.effort, autoReview: r.autoReview,
         isSubagent: r.isSubagent, agentNickname: r.agentNickname, depth: r.depth,
         tokens: r.totals.billed || r.totals.total,
         rawTokens: r.totals.total,
