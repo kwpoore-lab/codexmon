@@ -417,8 +417,8 @@ function renderLiveTree(threads) {
     }
     return runCmp(a, b);
   };
-  featured.sort(cmp);
-  other.sort((a, b) => b.mtime - a.mtime);
+  featured.sort(cmp);          // cmp = runCmp, but frozen while a panel is expanded
+  other.sort(cmp);
   for (const arr of kids.values()) arr.sort(cmp);
 
   lastRunOrder = featured.map(r => r.id);
