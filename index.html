@@ -764,7 +764,12 @@ async function loadHistory() {
 }
 
 function rebuildPeriodSelect() {
-  const keys = [...new Set(histFiltered().map(s => histBucketKey(s.startedAt)))].sort().reverse();
+  let src = histFiltered();
+  if (histPeriod === 'hour') {   // hour view = last 24h only
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    src = src.filter(s => new Date(s.startedAt).getTime() >= cutoff);
+  }
+  const keys = [...new Set(src.map(s => histBucketKey(s.startedAt)))].sort().reverse();
   if (!histAnchor || !keys.includes(histAnchor)) histAnchor = keys[0];
   const sel = $('#periodSel');
   sel.innerHTML = keys.map(k => `<option value="${k}" ${k === histAnchor ? 'selected' : ''}>${esc(histBucketLabel(k))}</option>`).join('');
@@ -937,9 +942,9 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetai
 // trends
 // ---------------------------------------------------------------------------
 let trendPeriod = 'day';
-// "Hour" filter renders 15-minute bars
-const perLbl = (p) => p === 'hour' ? 'hour (15m bars)' : p;
-const perLblN = (p) => p === 'hour' ? '15m bars' : p + 's';
+// "Hour" filter = last 24h, rendered as 15-minute bars
+const perLbl = (p) => p === 'hour' ? 'hour — last 24h, 15m bars' : p;
+const perLblN = (p) => p === 'hour' ? '15m bars (last 24h)' : p + 's';
 let trendSub = false;
 let trendData = null;
 let trendPoll = null;

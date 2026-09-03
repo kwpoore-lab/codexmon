@@ -983,8 +983,15 @@ function pickSessions(includeSub, model, effort) {
     && (!effort || r.effort === effort));
 }
 
+// the "hour" (15-minute) view only covers the last 24 hours
+function windowSessions(recs, period) {
+  if (period !== 'hour') return recs;
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  return recs.filter((r) => new Date(r.startedAt).getTime() >= cutoff);
+}
+
 function trends(period, includeSub, model, effort) {
-  const recs = pickSessions(includeSub, model, effort);
+  const recs = windowSessions(pickSessions(includeSub, model, effort), period);
   const buckets = new Set();
   const totals = {};
   const cmdMap = new Map();
@@ -1105,7 +1112,7 @@ function economy(sinceMs, includeSub, model, effort) {
 // Time-series for one base command: output tokens / calls / truncated / Δ tokens
 // per day|week|month bucket, plus per-invocation and per-polled-process series.
 function commandTrend(base, period, includeSub, model, effort) {
-  const recs = pickSessions(includeSub, model, effort);
+  const recs = windowSessions(pickSessions(includeSub, model, effort), period);
   const buckets = new Set();
   const series = { outTokens: {}, calls: {}, truncated: {}, delta: {} };
   const bump = (k, b, v) => { series[k][b] = (series[k][b] || 0) + v; };
