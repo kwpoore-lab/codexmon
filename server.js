@@ -608,7 +608,7 @@ function liveSnapshot() {
   const rows = recentFiles(LIVE_WINDOW_MS)
     .map(({ fp }) => refreshFile(fp))
     .filter(Boolean)
-    .map(decorate)
+    .map((s) => decorate(s, true))
     .sort((a, b) => b.mtime - a.mtime);
 
   // freshest rate-limit / quota reading across live threads
@@ -642,7 +642,7 @@ function historySnapshot(date) {
   const rows = filesForDate(date)
     .map((fp) => refreshFile(fp))
     .filter(Boolean)
-    .map(decorate)
+    .map((s) => decorate(s, false))
     .sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
   return { date, threads: rows };
 }
