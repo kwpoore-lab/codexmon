@@ -161,17 +161,17 @@
   .bc-body { display: flex; gap: 6px; }
   .bc-yax { display: flex; flex-direction: column; justify-content: space-between; width: 46px;
     height: 150px; font: 10px/1 var(--mono); color: var(--dim); text-align: right; }
-  .bc-plot { position: relative; flex: 1; display: flex; align-items: flex-end; gap: 1px; height: 150px;
-    border-bottom: 1px solid var(--border);
+  .bc-plot { position: relative; flex: 1; display: flex; align-items: flex-end;
+    justify-content: space-between; height: 150px; border-bottom: 1px solid var(--border);
     background: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--border) calc(25% - 1px), var(--border) 25%); }
-  .bc-bar { flex: 1 1 0; min-width: 0; min-height: 1px; background: var(--accent); opacity: .75;
-    border-radius: 1px 1px 0 0; }
+  .bc-bar { flex: 0 0 auto; min-height: 1px; background: var(--accent); opacity: .8; border-radius: 1px 1px 0 0; }
   .bc-bar:hover { opacity: 1; }
   .bc-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .bc-line polyline { fill: none; stroke: var(--purple); stroke-width: 1.4; opacity: .55;
+  .bc-line polyline { fill: none; stroke: var(--purple); stroke-width: 1.4; opacity: .5;
     vector-effect: non-scaling-stroke; }
-  .bc-xax { display: flex; gap: 1px; margin: 3px 0 0 52px; font: 9.5px/1 var(--mono); color: var(--dim); }
-  .bc-xax span { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: visible; }
+  .bc-xax { display: flex; justify-content: space-between; margin: 3px 0 0 52px;
+    font: 9.5px/1 var(--mono); color: var(--dim); }
+  .bc-xax span { flex: 0 0 auto; white-space: nowrap; text-align: center; overflow: visible; }
   .ct-ctrls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
   .ct-ctrls .seg button { padding: 3px 9px; font-size: 11px; }
   .cmdlink { cursor: pointer; border-bottom: 1px dotted currentColor; }
@@ -943,13 +943,15 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
   if (!buckets.length) return '<div class="bchart"><div class="bc-title">no data</div></div>';
   const vals = buckets.map(valueFn);
   const max = Math.max(...vals, 1);
-  const step = Math.max(1, Math.ceil(buckets.length / 16));
+  const n = buckets.length;
+  const bw = Math.min(13, Math.max(3, Math.round(680 / n)));   // px per bar; gaps fill the rest
+  const step = Math.max(1, Math.ceil(n / 14));
   let lineSvg = '';
   const line = opts.line;
-  if (line && line.length === buckets.length && line.some(v => v)) {
+  if (line && line.length === n && line.some(v => v)) {
     const lmax = Math.max(...line, 1);
-    const n = Math.max(1, buckets.length - 1);
-    const pts = line.map((v, i) => `${(i / n * 100).toFixed(2)},${(96 - v / lmax * 92).toFixed(2)}`).join(' ');
+    const d = Math.max(1, n - 1);
+    const pts = line.map((v, i) => `${(i / d * 100).toFixed(2)},${(96 - v / lmax * 92).toFixed(2)}`).join(' ');
     lineSvg = `<svg class="bc-line" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points="${pts}"/></svg>`;
   }
   return `<div class="bchart">
@@ -957,11 +959,11 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
     <div class="bc-body">
       <div class="bc-yax">${[1, 0.75, 0.5, 0.25, 0].map(f => `<span>${kfmt(max * f)}</span>`).join('')}</div>
       <div class="bc-plot">
-        ${vals.map((v, i) => `<div class="bc-bar" style="height:${(v / max * 100).toFixed(1)}%" title="${esc(buckets[i])} — ${fmt(v)}"></div>`).join('')}
+        ${vals.map((v, i) => `<div class="bc-bar" style="width:${bw}px;height:${(v / max * 100).toFixed(1)}%" title="${esc(buckets[i])} — ${fmt(v)}"></div>`).join('')}
         ${lineSvg}
       </div>
     </div>
-    <div class="bc-xax">${buckets.map((b, i) => `<span>${i % step === 0 ? esc(b.length > 7 ? b.slice(5) : b) : ''}</span>`).join('')}</div>
+    <div class="bc-xax">${buckets.map((b, i) => `<span style="width:${bw}px">${i % step === 0 ? esc(b.length > 7 ? b.slice(5) : b) : ''}</span>`).join('')}</div>
   </div>`;
 }
 
@@ -1167,7 +1169,6 @@ function ctPanel(base) {
   const mLabel = (CT_METRICS.find(m => m.k === s.metric) || {}).label;
   const perB = {}; B.forEach(b => { perB[b] = ctMetricVal(d, b, s.metric); });
   const line = s.metric === 'calls' ? null : B.map(b => d.series.calls[b] || 0);
-  const pf = ctPerFn(s.metric);
 
   const t = d.totals;
   const grand = `<div class="tgrand" style="margin:6px 0 8px">
@@ -1179,19 +1180,24 @@ function ctPanel(base) {
   </div>`;
 
   const open = s.openRows || (s.openRows = new Set());
+  // per-row (process / invocation) metric — there's no per-row Δ tokens, so
+  // fall back to output tokens for the Δ view
+  const rowMetric = s.metric === 'delta' ? 'outTokens' : s.metric;
+  const rowLabel = s.metric === 'delta' ? 'Output tokens' : mLabel;
+  const rpf = ctPerFn(rowMetric);
   const sampRows = (rows) => rows.map(r => {
     const o = open.has(r.cmd);
     let h = `<tr class="ctrow" data-ct-row="${esc(r.cmd)}" data-ct-rowbase="${esc(base)}" style="cursor:pointer">
       <td class="cmd" title="${esc(r.cmd)}">${o ? '▾ ' : '▸ '}${esc(short(r.cmd, 120))}</td>
       <td class="num">${fmt(r.count)}</td>
       <td class="num">${fmt(r.out)}</td>
-      <td class="trend-cell">${tspark(r.per, B, pf)}</td></tr>`;
+      <td class="trend-cell">${tspark(r.per, B, rpf)}</td></tr>`;
     if (o) {
       h += `<tr class="trow-detail"><td colspan="4">
-        ${tbarChart(B, b => (pf(r.per[b], b) || 0), esc(short(r.cmd, 90)) + ' — ' + mLabel.toLowerCase() + ' per ' + s.period)}
+        ${tbarChart(B, b => (rpf(r.per[b], b) || 0), esc(short(r.cmd, 90)) + ' — ' + rowLabel.toLowerCase() + ' per ' + s.period)}
         <div style="overflow-x:auto"><table><tbody>
           <tr class="lbl-row"><td>${s.period}</td>${B.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
-          <tr><td class="num">${esc(mLabel)}</td>${B.map(b => `<td class="num">${kfmt(pf(r.per[b], b) || 0)}</td>`).join('')}</tr>
+          <tr><td class="num">${esc(rowLabel)}</td>${B.map(b => `<td class="num">${kfmt(rpf(r.per[b], b) || 0)}</td>`).join('')}</tr>
           <tr><td class="num">runs</td>${B.map(b => `<td class="num">${(r.per[b] && r.per[b].calls) || 0}</td>`).join('')}</tr>
         </tbody></table></div></td></tr>`;
     }
@@ -1200,11 +1206,11 @@ function ctPanel(base) {
 
   const realSamples = (d.samples || []).filter(x => x.cmd && x.cmd !== base && x.cmd.length > base.length + 1);
   const samplesTbl = realSamples.length ? `
-    <p class="subh" style="margin-top:10px">Actual invocations — click a row for its ${esc(mLabel.toLowerCase())} trend</p>
+    <p class="subh" style="margin-top:10px">Actual invocations — click a row for its ${esc(rowLabel.toLowerCase())} trend</p>
     <table><thead><tr><th>Command</th><th class="num">Runs</th><th class="num">~Out tok</th><th class="trend-cell">Trend</th></tr></thead>
     <tbody>${sampRows(realSamples)}</tbody></table>` : '';
   const pollsTbl = (d.pollTargets || []).length ? `
-    <p class="subh" style="margin-top:10px">Processes being polled — click a row for its ${esc(mLabel.toLowerCase())} trend</p>
+    <p class="subh" style="margin-top:10px">Processes being polled — click a row for its ${esc(rowLabel.toLowerCase())} trend</p>
     <table><thead><tr><th>Process</th><th class="num">Polls</th><th class="num">~Tokens</th><th class="trend-cell">Trend</th></tr></thead>
     <tbody>${sampRows(d.pollTargets)}</tbody></table>` : '';
 
