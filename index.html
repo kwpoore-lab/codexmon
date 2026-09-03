@@ -177,7 +177,14 @@
 <main>
   <section id="tab-running">
     <div id="usageSummary" class="tgrand" hidden></div>
-    <h2>Prompts running now</h2>
+    <h2>Prompts running now
+      <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
+        sort
+        <span class="seg" id="runSort">
+          <button data-s="started" class="on">Started</button><button data-s="tokens">Tokens</button>
+        </span>
+      </span>
+    </h2>
     <div id="running"><div class="empty">Waiting for activity…</div></div>
     <h2>Other live sessions</h2>
     <div id="live" class="grid"></div>
@@ -332,12 +339,17 @@ function renderUsage(snap) {
 // Running-now focus panel
 // ---------------------------------------------------------------------------
 let runningIds = [];   // ids shown in the running section (excluded from the grid)
+let runSort = 'started';   // 'started' | 'tokens', both descending
+
+function runCmp(a, b) {
+  if (runSort === 'tokens') return (b.cumReqTokens || 0) - (a.cumReqTokens || 0);
+  return (b.startedAt || '').localeCompare(a.startedAt || '') || (b.mtime - a.mtime);
+}
 
 function renderRunning(threads, running) {
   const el = $('#running');
   // one panel per active agent: everything running or mid-turn, plus most-recent idle if nothing else
-  let cands = threads.filter(t => t.status === 'running' || t.taskActive)
-    .sort((a, b) => b.mtime - a.mtime);
+  let cands = threads.filter(t => t.status === 'running' || t.taskActive).sort(runCmp);
   if (!cands.length) {
     const idle = threads.filter(t => t.status === 'idle').sort((a, b) => b.mtime - a.mtime);
     if (idle.length) cands = [idle[0]];
@@ -676,6 +688,13 @@ $('#histSeg').addEventListener('click', (e) => {
 });
 $('#periodSel').addEventListener('change', (e) => { histAnchor = e.target.value; renderHistory(); });
 $('#histSub').addEventListener('change', (e) => { histSub = e.target.checked; rebuildPeriodSelect(); renderHistory(); });
+
+$('#runSort').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...$('#runSort').children].forEach(x => x.classList.toggle('on', x === b));
+  runSort = b.dataset.s;
+  if (lastSnap) render(lastSnap);
+});
 
 // ---------------------------------------------------------------------------
 // detail overlay
