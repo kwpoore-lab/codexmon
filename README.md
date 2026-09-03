@@ -28,7 +28,7 @@ If it can't find one, set `CODEX_HOME` or pass `--root`.
 
 ## What it shows
 
-Three tabs: **Running now**, **History**, **Trends**.
+Four tabs: **Running now**, **History**, **Trends**, **Economy**.
 
 ### Running now
 
@@ -73,8 +73,30 @@ subagents). Shows grand totals, a tokens-per-bucket bar chart, and two independe
   `apply_patch`'s consumption has moved week to week.
 - **By prompt** — the same, keyed by each session's opening prompt (near-duplicates merged).
 
-Each list has a filter box. Backed by a one-time streaming scan of every session file
-(~40s for ~1000 sessions), cached to `.cache/rollups.json` and refreshed incrementally after.
+Each list has a filter box.
+
+### Economy
+
+"Where do the tokens go, and what looks wasteful?" — aggregated over all sessions (All time /
+30 days / 7 days; subagents included by default).
+
+- **Headline cards**: total command-output tokens read back into context, results truncated at
+  the output limit, polling/waiting round-trips (empty `write_stdin` / `wait` / bare
+  `exec_command`) as a count and % of all tool calls, and redundant re-runs of unchanged
+  commands.
+- **By command**: which base commands feed the most text back to the model — tokens, calls,
+  avg per call, truncation count. Big + frequent = the best places to add `| tail`, `--quiet`,
+  `rg` instead of `cat`, or request specific JSON fields.
+- **Biggest single outputs**, **repeated commands**, and **poll-dominated sessions** — each a
+  click-through to the session, with a one-line note on what it means.
+
+Output token counts are estimated (~4 chars/token) from the logged tool results. Model
+reasoning is encrypted in the rollout files, so the "why" behind each step isn't available —
+only what ran and what came back.
+
+Trends and Economy share a one-time streaming scan of every session file (~40s for ~1000
+sessions; only parses relevant lines), cached to `.cache/rollups.json` and refreshed
+incrementally after.
 
 ## How it works
 
@@ -98,3 +120,4 @@ Each list has a filter box. Backed by a one-time streaming scan of every session
 | `GET /api/sessions?date=YYYY-MM-DD` | session summaries for a day |
 | `GET /api/session/:uuid` | full timeline + summary |
 | `GET /api/trends?period=day\|week\|month&subagents=0\|1` | aggregated rollups (`{building:true}` while first scan runs) |
+| `GET /api/economy?range=all\|30d\|7d&subagents=0\|1` | token-economy signals from the same rollups |
