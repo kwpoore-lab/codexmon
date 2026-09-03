@@ -1,6 +1,26 @@
 # codexmon
 
-Live + historical monitor for Codex CLI usage, reading `~/.codex/sessions/**/rollout-*.jsonl`.
+**A live and historical monitor for [OpenAI Codex CLI](https://github.com/openai/codex) usage.**
+
+codexmon tails the JSONL session logs Codex writes to `~/.codex/sessions/` and turns them into a
+local web dashboard — no account access, no API keys, nothing to send anywhere. It runs from a
+single zero-dependency Node script.
+
+- **Prompts running now** — one live panel per active agent, refreshed every ~2s, with a
+  billed-token consumption chart, the current command history, per-command token deltas, and a
+  quota/usage bar (weekly rate-limit % + tokens today/this week).
+- **Subagent lineage** — spawned-by chains up to the root prompt, including Codex's auto-approval
+  `guardian` shown nested under the thread it's reviewing.
+- **History** — every past session by day / week / month, sortable, with prompt, model, effort,
+  git branch, billed tokens and command count.
+- **Trends** — token consumption bucketed over time, split into two lists (by base command, by
+  prompt), each drillable to a per-bucket chart.
+- **Economy** — a token-waste audit: which commands dump the most output back into context,
+  truncation hits, polling/wait round-trips, and commands re-run unchanged.
+
+It also corrects for Codex quirks the raw numbers don't show — the token counter resetting on
+context compaction, `total_token_usage` under-counting long sessions, UTC timestamps, and JS-wrapped
+tool calls.
 
 ## Run
 
