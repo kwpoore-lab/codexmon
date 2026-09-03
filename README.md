@@ -4,12 +4,27 @@ Live + historical monitor for Codex CLI usage, reading `~/.codex/sessions/**/rol
 
 ## Run
 
+Requires Node ≥ 18. No dependencies, nothing to install.
+
 ```bash
-node server.js            # http://localhost:4317
-node server.js --port 8080 --root ~/.codex
+git clone https://github.com/kwpoore-lab/codexmon
+cd codexmon
+node server.js            # -> http://localhost:4317
 ```
 
-Zero dependencies (Node stdlib only). Open the URL in a browser.
+Options: `--port 8080`, `--root /path/to/.codex`.
+
+### Finding your Codex data
+
+On startup codexmon locates your Codex home automatically, in this order:
+
+1. `--root <dir>`
+2. `$CODEX_HOME` (the same variable Codex itself honours)
+3. `$XDG_CONFIG_HOME/codex`
+4. `~/.codex`, then `~/.config/codex`, then the OS app-support dir
+
+It picks the first one containing a `sessions/` directory and prints which it used.
+If it can't find one, set `CODEX_HOME` or pass `--root`.
 
 ## What it shows
 

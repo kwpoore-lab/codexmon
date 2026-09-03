@@ -22,10 +22,6 @@ function argVal(name, def) {
   return i >= 0 && args[i + 1] ? args[i + 1] : def;
 }
 const PORT = parseInt(argVal('--port', process.env.PORT || '4317'), 10);
-const CODEX_ROOT = expandHome(argVal('--root', path.join(os.homedir(), '.codex')));
-const SESSIONS_DIR = path.join(CODEX_ROOT, 'sessions');
-const ARCHIVED_DIR = path.join(CODEX_ROOT, 'archived_sessions');
-const SESSION_INDEX = path.join(CODEX_ROOT, 'session_index.jsonl');
 
 const TICK_MS = 2000;          // rescan cadence
 const LIVE_WINDOW_MS = 15 * 60 * 1000;   // show in live feed if touched within this
@@ -35,9 +31,46 @@ const IDLE_MS = 5 * 60 * 1000; // yellow dot
 function expandHome(p) {
   if (!p) return p;
   if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
   return p;
 }
+
+// Resolve the Codex home directory. Codex itself honours $CODEX_HOME and
+// otherwise uses ~/.codex, so mirror that, then fall back to a few common
+// spots and finally a shallow scan. A valid root contains a `sessions/` dir.
+function looksLikeCodexHome(dir) {
+  try { return fs.statSync(path.join(dir, 'sessions')).isDirectory(); } catch (_) { return false; }
+}
+
+function resolveCodexRoot() {
+  const home = os.homedir();
+  const explicit = argVal('--root', null);
+  const candidates = [
+    explicit && { dir: expandHome(explicit), src: 'given' },
+    process.env.CODEX_HOME && { dir: expandHome(process.env.CODEX_HOME), src: '$CODEX_HOME' },
+    process.env.XDG_CONFIG_HOME && { dir: path.join(expandHome(process.env.XDG_CONFIG_HOME), 'codex'), src: '$XDG_CONFIG_HOME/codex' },
+    { dir: path.join(home, '.codex'), src: '~/.codex' },
+    { dir: path.join(home, '.config', 'codex'), src: '~/.config/codex' },
+    process.platform === 'darwin' && { dir: path.join(home, 'Library', 'Application Support', 'codex'), src: 'app support' },
+    process.platform === 'win32' && process.env.APPDATA && { dir: path.join(process.env.APPDATA, 'codex'), src: '%APPDATA%' },
+    process.platform === 'win32' && process.env.LOCALAPPDATA && { dir: path.join(process.env.LOCALAPPDATA, 'codex'), src: '%LOCALAPPDATA%' },
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    if (looksLikeCodexHome(c.dir)) return { root: c.dir, why: c.src };
+  }
+  // fresh install: a dir that exists but has no sessions/ yet
+  for (const c of candidates) {
+    try { if (fs.statSync(c.dir).isDirectory()) return { root: c.dir, why: c.src + ' (no sessions yet)' }; } catch (_) {}
+  }
+  if (explicit) return { root: expandHome(explicit), why: 'given — not found!' };
+  return { root: path.join(home, '.codex'), why: 'default — not found, is Codex installed?' };
+}
+
+const { root: CODEX_ROOT, why: ROOT_WHY } = resolveCodexRoot();
+const SESSIONS_DIR = path.join(CODEX_ROOT, 'sessions');
+const ARCHIVED_DIR = path.join(CODEX_ROOT, 'archived_sessions');
+const SESSION_INDEX = path.join(CODEX_ROOT, 'session_index.jsonl');
 
 // ---------------------------------------------------------------------------
 // session_index.jsonl -> { id: thread_name }
@@ -609,6 +642,10 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`codexmon watching ${SESSIONS_DIR}`);
+  console.log(`codexmon → ${CODEX_ROOT}  [${ROOT_WHY}]`);
+  if (!looksLikeCodexHome(CODEX_ROOT)) {
+    console.warn(`  warning: no "sessions/" dir here. Set CODEX_HOME or pass --root /path/to/.codex`);
+  }
+  console.log(`  watching ${SESSIONS_DIR}`);
   console.log(`  http://localhost:${PORT}`);
 });
