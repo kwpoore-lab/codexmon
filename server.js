@@ -153,11 +153,22 @@ function isTagText(t) {
 
 const unesc = (s) => s.replace(/\\n/g, ' ').replace(/\\t/g, ' ').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim();
 
+// tool-call payloads carry their args as `input` (custom_tool_call) or a JSON
+// string `arguments` (function_call).
+function toolInput(p) {
+  if (typeof p.input === 'string') return p.input;
+  if (typeof p.arguments === 'string') return p.arguments;
+  return JSON.stringify(p.input || p.arguments || '');
+}
+
 // Codex tool inputs are usually JS snippets calling tools.exec_command({...}).
 // Dig out the actual shell command; fall back to something readable.
+const EXEC_TOOLS = new Set(['exec', 'shell', 'local_shell', 'container.exec']);
 function extractCmd(name, input) {
   if (!input) return name || '';
   if (/\*\*\*\s*Begin Patch/.test(input) || name === 'apply_patch') return 'apply_patch';
+  // a non-shell tool with no embedded command → just name it
+  if (name && !EXEC_TOOLS.has(name) && !/["']?(?:cmd|command)["']?\s*:/.test(input)) return name;
   // cmd: "…"  or  "cmd": "…"
   let m = input.match(/["']?cmd["']?\s*:\s*"((?:[^"\\]|\\.)*)"/);
   if (m) return unesc(m[1]);
@@ -299,7 +310,7 @@ function applyLine(sum, raw) {
     }
     if (p.type === 'custom_tool_call' || p.type === 'function_call') {
       sum.toolCallCount++;
-      const input = typeof p.input === 'string' ? p.input : JSON.stringify(p.input || '');
+      const input = toolInput(p);
       const entry = { ts, name: p.name || p.type, cmd: extractCmd(p.name, input).slice(0, 400),
         total: sum.lastTotalTokens, last: sum.lastReqTokens, turn: sum.curTurn || 0 };
       sum.lastExec = { name: entry.name, first: entry.cmd, ts };
@@ -413,13 +424,13 @@ const MULTI_VERB = new Set([
   'apt', 'apt-get', 'brew', 'rustup', 'deno', 'bun',
 ]);
 
+const SHELL_TOOLS = new Set(['exec', 'shell', 'local_shell', 'container.exec', 'exec_command']);
 function baseCommand(entry) {
   const name = entry.name || 'exec';
-  if (name !== 'exec' && name !== 'shell' && name !== 'local_shell' && name !== 'container.exec') {
-    return name;
-  }
+  if (!SHELL_TOOLS.has(name)) return name;
   let s = (entry.cmd || '').trim();
-  if (!s) return name;
+  // a bare shell-tool call with no command = reading more output from a running process
+  if (!s || s === name) return name === 'exec_command' ? 'exec_command' : name;
   // unwrap: leading "(cd path &&", "cd path &&", env VAR=val, "bash -lc '...'"
   s = s.replace(/^\(\s*/, '');
   s = s.replace(/^cd\s+\S+\s*&&\s*/, '');
@@ -563,8 +574,7 @@ function timeline(uuid) {
       if (txt && !isTagText(txt) && p.role !== 'developer' && p.role !== 'system')
         events.push({ ts, kind: 'message', role: p.role, text: txt.slice(0, 4000) });
     } else if (o.type === 'response_item' && (p.type === 'custom_tool_call' || p.type === 'function_call')) {
-      const input = typeof p.input === 'string' ? p.input : JSON.stringify(p.input || '', null, 1);
-      events.push({ ts, kind: 'tool', name: p.name || p.type, input: input.slice(0, 4000) });
+      events.push({ ts, kind: 'tool', name: p.name || p.type, input: toolInput(p).slice(0, 4000) });
     } else if (o.type === 'response_item' && p.type === 'reasoning' && Array.isArray(p.summary) && p.summary.length) {
       events.push({ ts, kind: 'reasoning', text: p.summary.join('\n').slice(0, 2000) });
     } else if (o.type === 'event_msg' && p.type === 'token_count' && p.info && p.info.total_token_usage) {
@@ -595,7 +605,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 3;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 7;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -622,9 +632,18 @@ function scanSession(file, st) {
       startedAt: null, prompt: null, project: null, isSubagent: false,
       totals: { total: 0, input: 0, output: 0, cached: 0, reasoning: 0 },
       cmds: [],
+      // economy signals
+      toolCalls: 0, pollTurns: 0, outTokens: 0,
+      outByBase: {},        // base -> {tokens, calls, truncated}
+      bigOutputs: [],        // top few { base, cmd, tokens }
+      dupes: {},             // exact cmd -> { count, tokens }
     };
     let lastTotal = 0, firstUser = null;
     const seq = [];
+    const pending = new Map();   // call_id -> { base, cmd, cap, poll }
+    const estTok = (s) => Math.ceil((s || 0) / 4);   // ~4 chars/token
+    const outText = (o) => Array.isArray(o) ? o.map((x) => (x && x.text) || '').join('')
+      : (typeof o === 'string' ? o : (o && (o.text || o.content)) || '');
     let rl;
     try {
       rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
@@ -632,7 +651,7 @@ function scanSession(file, st) {
     rl.on('line', (line) => {
       if (!line) return;
       const tok = line.indexOf('"token_count"') !== -1;
-      const tool = line.indexOf('custom_tool_call') !== -1 || line.indexOf('"function_call"') !== -1;
+      const tool = line.indexOf('custom_tool_call') !== -1 || line.indexOf('function_call') !== -1;
       const meta = line.indexOf('"session_meta"') !== -1;
       const user = firstUser === null && line.indexOf('"role":"user"') !== -1;
       if (!tok && !tool && !meta && !user) return;
@@ -652,8 +671,39 @@ function scanSession(file, st) {
         rec.totals.cached = u.cached_input_tokens || rec.totals.cached;
         rec.totals.reasoning = u.reasoning_output_tokens || rec.totals.reasoning;
       } else if (o.type === 'response_item' && (p.type === 'custom_tool_call' || p.type === 'function_call')) {
-        const input = typeof p.input === 'string' ? p.input : JSON.stringify(p.input || '');
-        seq.push({ base: baseCommand({ name: p.name, cmd: extractCmd(p.name, input) }), total: lastTotal });
+        const input = toolInput(p);
+        const cmd = extractCmd(p.name, input);
+        const base = baseCommand({ name: p.name, cmd });
+        seq.push({ base, total: lastTotal });
+        rec.toolCalls++;
+        // empty write_stdin / wait / bare exec_command = the agent is just
+        // polling output from an already-running process, not doing new work
+        const isPoll = (/write_stdin/.test(input) && /chars["'\s:]*["'`]{2}/.test(input))
+          || /^wait(_agent)?$/.test(p.name || '')
+          || (p.name === 'exec_command' && !/["']?cmd["']?\s*:/.test(input));
+        if (isPoll) rec.pollTurns++;
+        const capM = input.match(/max_output_tokens["'\s:]*?(\d{3,})/);
+        const cap = capM ? +capM[1] : 0;
+        if (p.call_id) pending.set(p.call_id, { base, cmd, cap });
+      } else if (o.type === 'response_item' && (p.type === 'custom_tool_call_output' || p.type === 'function_call_output')) {
+        const call = p.call_id && pending.get(p.call_id);
+        pending.delete(p.call_id);
+        const t = estTok(outText(p.output).length);
+        rec.outTokens += t;
+        const base = call ? call.base : 'other';
+        const g = rec.outByBase[base] || (rec.outByBase[base] = { tokens: 0, calls: 0, truncated: 0 });
+        g.tokens += t; g.calls++;
+        const truncated = call && call.cap ? t >= call.cap * 0.9 : t >= 9000;
+        if (truncated) g.truncated++;
+        const isPoll = base === 'wait' || base === 'wait_agent' || base === 'write_stdin' || base === 'exec_command';
+        if (call && t >= 4000 && !isPoll) {
+          rec.bigOutputs.push({ base, cmd: call.cmd.slice(0, 160), tokens: t, truncated: !!truncated });
+        }
+        if (call && call.cmd && !isPoll) {
+          const key = call.cmd.slice(0, 200);
+          const d = rec.dupes[key] || (rec.dupes[key] = { count: 0, tokens: 0 });
+          d.count++; d.tokens += t;
+        }
       } else if (o.type === 'response_item' && p.type === 'message' && p.role === 'user' && firstUser === null) {
         const txt = textFromContent(p.content);
         if (txt && !isTagText(txt)) firstUser = txt.replace(/\s+/g, ' ').trim().slice(0, 240);
@@ -672,6 +722,12 @@ function scanSession(file, st) {
         agg.set(c.base, g);
       }
       rec.cmds = [...agg.values()];
+      rec.bigOutputs.sort((a, b) => b.tokens - a.tokens);
+      rec.bigOutputs = rec.bigOutputs.slice(0, 8);
+      rec.dupes = Object.entries(rec.dupes)
+        .filter(([, v]) => v.count >= 3)
+        .map(([cmd, v]) => ({ cmd, count: v.count, tokens: v.tokens }))
+        .sort((a, b) => b.tokens - a.tokens).slice(0, 12);
       resolve(rec);
     });
     rl.on('error', () => resolve(rec));
@@ -775,6 +831,57 @@ function trends(period, includeSub) {
   };
 }
 
+// "Where are the tokens going, and what looks wasteful?"
+function economy(sinceMs, includeSub) {
+  const cutoff = sinceMs ? Date.now() - sinceMs : 0;
+  const recs = [...rollupCache.sessions.values()].filter((r) =>
+    r.startedAt && (includeSub || !r.isSubagent) &&
+    (!cutoff || new Date(r.startedAt).getTime() >= cutoff));
+
+  const tot = { sessions: recs.length, outTokens: 0, toolCalls: 0, pollTurns: 0,
+    truncatedCalls: 0, dupeRuns: 0, dupeTokens: 0, modelOutput: 0, modelReasoning: 0 };
+  const byBase = new Map();
+  const bigOutputs = [];
+  const dupes = [];
+  const pollSessions = [];
+
+  for (const r of recs) {
+    tot.outTokens += r.outTokens || 0;
+    tot.toolCalls += r.toolCalls || 0;
+    tot.pollTurns += r.pollTurns || 0;
+    tot.modelOutput += r.totals.output || 0;
+    tot.modelReasoning += r.totals.reasoning || 0;
+    for (const [base, g] of Object.entries(r.outByBase || {})) {
+      const e = byBase.get(base) || (byBase.set(base, { base, tokens: 0, calls: 0, truncated: 0 }).get(base));
+      e.tokens += g.tokens; e.calls += g.calls; e.truncated += g.truncated;
+      tot.truncatedCalls += g.truncated;
+    }
+    for (const b of r.bigOutputs || []) {
+      bigOutputs.push({ ...b, sessionId: r.id, prompt: r.prompt, project: r.project });
+    }
+    for (const d of r.dupes || []) {
+      dupes.push({ ...d, sessionId: r.id, prompt: r.prompt, project: r.project });
+      tot.dupeRuns += d.count - 1;
+      tot.dupeTokens += Math.round(d.tokens * (d.count - 1) / d.count);
+    }
+    if ((r.toolCalls || 0) >= 15) {
+      pollSessions.push({
+        sessionId: r.id, prompt: r.prompt, project: r.project,
+        pollTurns: r.pollTurns || 0, toolCalls: r.toolCalls,
+        pct: Math.round(100 * (r.pollTurns || 0) / r.toolCalls),
+      });
+    }
+  }
+  return {
+    building: !rollupReady, progress: buildProgress,
+    totals: tot,
+    byCommand: [...byBase.values()].sort((a, b) => b.tokens - a.tokens),
+    bigOutputs: bigOutputs.sort((a, b) => b.tokens - a.tokens).slice(0, 40),
+    dupes: dupes.sort((a, b) => b.tokens - a.tokens).slice(0, 40),
+    pollSessions: pollSessions.filter((s) => s.pollTurns > 0).sort((a, b) => b.pct - a.pct).slice(0, 25),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // SSE plumbing
 // ---------------------------------------------------------------------------
@@ -849,6 +956,15 @@ const server = http.createServer((req, res) => {
     const includeSub = url.searchParams.get('subagents') === '1';
     if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
     return json(res, 200, trends(period, includeSub));
+  }
+
+  if (pathn === '/api/economy') {
+    ensureRollups();
+    const range = url.searchParams.get('range');
+    const sinceMs = range === '7d' ? 7 * 864e5 : range === '30d' ? 30 * 864e5 : 0;
+    const includeSub = url.searchParams.get('subagents') !== '0';   // default: include
+    if (!rollupReady) return json(res, 200, { building: true, progress: buildProgress });
+    return json(res, 200, economy(sinceMs, includeSub));
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });

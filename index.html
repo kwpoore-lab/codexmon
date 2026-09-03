@@ -138,6 +138,17 @@
   .spark rect { fill: var(--accent); }
   .lbl-row td { font-size: 11px; color: var(--dim); font-family: var(--mono); }
 
+  /* economy */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 4px 0 18px; }
+  .ecard { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .ecard .big { font-size: 22px; font-weight: 650; font-family: var(--mono); }
+  .ecard .cap { font-size: 12px; color: var(--fg); margin-top: 2px; }
+  .ecard .hint { font-size: 11px; color: var(--dim); margin-top: 5px; line-height: 1.4; }
+  .ecard.warn { border-left: 3px solid var(--yellow); }
+  .esec { margin-top: 22px; }
+  .esec > .blurb { font-size: 12px; color: var(--dim); margin: 0 0 8px; max-width: 780px; }
+  .esec h3 { font-size: 13px; margin: 0 0 3px; }
+
   #tip { position: fixed; z-index: 40; max-width: 620px; max-height: 60vh; overflow: auto;
     background: #0b0f16; border: 1px solid var(--border); border-radius: 7px; padding: 9px 11px;
     box-shadow: 0 8px 28px rgba(0,0,0,.55); font: 11px/1.5 var(--mono); pointer-events: none; }
@@ -158,6 +169,7 @@
     <a href="#running" data-tab="running" class="on">Running now</a>
     <a href="#history" data-tab="history">History</a>
     <a href="#trends" data-tab="trends">Trends</a>
+    <a href="#economy" data-tab="economy">Economy</a>
   </nav>
   <span id="conn"></span>
   <span class="stat" id="hdrstat">connecting…</span>
@@ -187,6 +199,19 @@
       </span>
     </h2>
     <div id="trends"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section id="tab-economy" hidden>
+    <h2>Economy — where the tokens go
+      <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
+        <span class="seg" id="ecoRange">
+          <button data-r="all" class="on">All time</button><button data-r="30d">30 days</button><button data-r="7d">7 days</button>
+        </span>
+        <label style="margin-left:12px;font-size:12px;color:var(--dim)">
+          <input type="checkbox" id="ecoSub" checked> include subagents</label>
+      </span>
+    </h2>
+    <div id="economy"><div class="empty">Loading…</div></div>
   </section>
 </main>
 
@@ -770,18 +795,139 @@ $('#periodSeg').addEventListener('click', (e) => {
 $('#subToggle').addEventListener('change', (e) => { trendSub = e.target.checked; loadTrends(); });
 
 // ---------------------------------------------------------------------------
+// economy — "where do the tokens go, and what looks wasteful"
+// ---------------------------------------------------------------------------
+let ecoRange = 'all';
+let ecoSub = true;
+let ecoData = null;
+let ecoPoll = null;
+
+async function loadEconomy() {
+  const el = $('#economy');
+  const r = await fetch(`/api/economy?range=${ecoRange}&subagents=${ecoSub ? 1 : 0}`).then(x => x.json());
+  if (r.building) {
+    const p = r.progress || {};
+    el.innerHTML = `<div class="empty">Building rollup cache… ${p.done || 0} / ${p.total || '?'} sessions</div>`;
+    clearTimeout(ecoPoll); ecoPoll = setTimeout(loadEconomy, 1500);
+    return;
+  }
+  ecoData = r;
+  renderEconomy();
+}
+
+function renderEconomy() {
+  const d = ecoData, t = d.totals;
+  const pollPct = t.toolCalls ? Math.round(100 * t.pollTurns / t.toolCalls) : 0;
+  const sessLink = (s) => `openDetail('${s.sessionId}')`;
+
+  $('#economy').innerHTML = `
+    <div class="cards">
+      <div class="ecard">
+        <div class="big">${kfmtN(t.outTokens)}</div>
+        <div class="cap">tokens of command output read back</div>
+        <div class="hint">Every command's stdout is fed into the model's context. This is the running cost of "look, then act".</div>
+      </div>
+      <div class="ecard warn">
+        <div class="big">${fmt(t.truncatedCalls)}</div>
+        <div class="cap">results cut off at the output limit</div>
+        <div class="hint">The model paid for a partial answer and often had to re-run a narrower command.</div>
+      </div>
+      <div class="ecard warn">
+        <div class="big">${fmt(t.pollTurns)} <span style="font-size:13px;color:var(--dim)">/ ${pollPct}%</span></div>
+        <div class="cap">polling / waiting round-trips</div>
+        <div class="hint">Turns spent watching a running process (empty <code>write_stdin</code>, <code>wait</code>) instead of doing work.</div>
+      </div>
+      <div class="ecard warn">
+        <div class="big">${fmt(t.dupeRuns)}</div>
+        <div class="cap">redundant re-runs of the same command</div>
+        <div class="hint">≈ ${kfmtN(t.dupeTokens)} tokens of output for commands run 3+ times unchanged in one session.</div>
+      </div>
+      <div class="ecard">
+        <div class="big">${kfmtN(t.modelOutput + t.modelReasoning)}</div>
+        <div class="cap">model output + reasoning tokens</div>
+        <div class="hint">What the model itself generated across ${fmt(t.sessions)} sessions (${kfmtN(t.modelReasoning)} reasoning).</div>
+      </div>
+    </div>
+
+    <div class="esec">
+      <h3>Which commands feed the most text back to the model</h3>
+      <p class="blurb">Big <b>and</b> frequent → the best targets. Narrower flags, <code>| tail</code>, <code>--quiet</code>,
+        <code>rg</code> instead of <code>cat</code>, or asking a tool for specific JSON fields all cut this directly.</p>
+      <table><thead><tr>
+        <th>Command</th><th class="num">Output tokens</th><th class="num">Calls</th>
+        <th class="num">Avg / call</th><th class="num">Truncated</th></tr></thead><tbody>
+        ${d.byCommand.slice(0, 18).map(c => `<tr>
+          <td class="base">${esc(c.base)}</td>
+          <td class="num">${fmt(c.tokens)}</td>
+          <td class="num">${fmt(c.calls)}</td>
+          <td class="num">${fmt(c.calls ? c.tokens / c.calls : 0)}</td>
+          <td class="num">${c.truncated || '·'}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+
+    <div class="esec">
+      <h3>Biggest single command outputs</h3>
+      <p class="blurb">Individual results that dumped the most into context at once. Click to open the session.</p>
+      <table><thead><tr>
+        <th class="num">~Tokens</th><th>Command</th><th>Session</th></tr></thead><tbody>
+        ${d.bigOutputs.map(b => `<tr onclick="${sessLink(b)}" style="cursor:pointer">
+          <td class="num">${fmt(b.tokens)}${b.truncated ? ' ✂' : ''}</td>
+          <td class="cmd">${esc(short(b.cmd || b.base, 90))}</td>
+          <td style="color:var(--dim)">${esc(b.project || '')} · ${esc(short(b.prompt, 44))}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+
+    <div class="esec">
+      <h3>Commands re-run unchanged (3+ times in one session)</h3>
+      <p class="blurb">Some repetition is real iteration. Repeated full test suites, re-reads of the same file,
+        or repeated <code>git status</code> usually aren't.</p>
+      <table><thead><tr>
+        <th class="num">Runs</th><th class="num">~Tokens</th><th>Command</th><th>Session</th></tr></thead><tbody>
+        ${d.dupes.map(x => `<tr onclick="${sessLink(x)}" style="cursor:pointer">
+          <td class="num">${x.count}×</td>
+          <td class="num">${fmt(x.tokens)}</td>
+          <td class="cmd">${esc(short(x.cmd, 90))}</td>
+          <td style="color:var(--dim)">${esc(x.project || '')} · ${esc(short(x.prompt, 40))}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+
+    <div class="esec">
+      <h3>Sessions dominated by polling</h3>
+      <p class="blurb">A high share of turns spent on <code>write_stdin</code>/<code>wait</code>. Running the long process
+        detached and checking it once when done removes most of these round-trips.</p>
+      <table><thead><tr>
+        <th class="num">Poll %</th><th class="num">Poll / total calls</th><th>Session</th></tr></thead><tbody>
+        ${d.pollSessions.map(s => `<tr onclick="${sessLink(s)}" style="cursor:pointer">
+          <td class="num">${s.pct}%</td>
+          <td class="num">${s.pollTurns} / ${s.toolCalls}</td>
+          <td>${esc(s.project || '')} · ${esc(short(s.prompt, 60))}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+
+    <p class="blurb" style="margin-top:20px">Token counts for command output are estimated (~4 chars/token) from the
+      logged tool results. Model reasoning is encrypted in the logs, so the "why" behind each step isn't shown — only what ran and what came back.</p>`;
+}
+
+$('#ecoRange').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...$('#ecoRange').children].forEach(x => x.classList.toggle('on', x === b));
+  ecoRange = b.dataset.r; loadEconomy();
+});
+$('#ecoSub').addEventListener('change', (e) => { ecoSub = e.target.checked; loadEconomy(); });
+
+// ---------------------------------------------------------------------------
 // tabs
 // ---------------------------------------------------------------------------
 let curTab = 'running';
+const TABS = ['running', 'history', 'trends', 'economy'];
 function showTab(name) {
-  if (!['running', 'history', 'trends'].includes(name)) name = 'running';
+  if (!TABS.includes(name)) name = 'running';
   curTab = name;
-  for (const t of ['running', 'history', 'trends']) {
-    $('#tab-' + t).hidden = t !== name;
-  }
+  for (const t of TABS) $('#tab-' + t).hidden = t !== name;
   [...$('#tabs').children].forEach(a => a.classList.toggle('on', a.dataset.tab === name));
   if (name === 'history' && !histRows.length) loadDates();
   if (name === 'trends' && !trendData) loadTrends();
+  if (name === 'economy' && !ecoData) loadEconomy();
 }
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 
