@@ -49,6 +49,13 @@
   /* focus panel — one per active agent */
   .focus { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--green);
     border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .focus-wrap { position: relative; }
+  .focus-wrap .tree-tick { position: absolute; left: -14px; top: 22px; width: 12px; height: 1px;
+    background: var(--border); }
+  .focus-wrap .tree-tick::before { content: ''; position: absolute; left: 0; bottom: 0;
+    width: 1px; height: 34px; background: var(--border); }
+  .focus.nested { border-left-color: var(--purple); background: var(--panel2); }
+  .focus.nested .ftitle { font-size: 13.5px; }
   .fhead { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-wrap: wrap; }
   .caret { display: inline-block; color: var(--dim); font-size: 11px; transition: transform .12s; width: 10px; }
   .focus.expanded .caret { transform: rotate(90deg); }
@@ -91,9 +98,13 @@
   .cmdscroll { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+  #live { display: flex; flex-direction: column; gap: 8px; max-width: 620px; }
+  .card-wrap { position: relative; }
+  .card-wrap .tree-tick { position: absolute; left: -13px; top: 20px; width: 11px; height: 1px; background: var(--border); }
+  .card-wrap .tree-tick::before { content: ''; position: absolute; left: 0; bottom: 0; width: 1px; height: 26px; background: var(--border); }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px;
     cursor: pointer; }
-  .card.sub { border-left: 3px solid var(--purple); margin-left: 16px; background: var(--panel2); }
+  .card.sub { border-left: 3px solid var(--purple); background: var(--panel2); }
   .card.running { border-left: 3px solid var(--green); }
   .card.idle { border-left: 3px solid var(--yellow); }
   .card.stale { opacity: .6; }
@@ -190,7 +201,7 @@
     </h2>
     <div id="running"><div class="empty">Waiting for activity…</div></div>
     <h2>Other live sessions</h2>
-    <div id="live" class="grid"></div>
+    <div id="live"></div>
   </section>
 
   <section id="tab-history" hidden>
@@ -359,26 +370,51 @@ function renderRunning(threads, running) {
     const idle = threads.filter(t => t.status === 'idle').sort((a, b) => b.mtime - a.mtime);
     if (idle.length) cands = [idle[0]];
   }
-
-  if (expanded.size && lastRunOrder.length) {
-    // a panel is expanded — hold the order steady; only place new panels
-    const pos = new Map(lastRunOrder.map((id, i) => [id, i]));
-    cands.sort((a, b) => {
-      const ai = pos.has(a.id) ? pos.get(a.id) : Infinity;
-      const bi = pos.has(b.id) ? pos.get(b.id) : Infinity;
-      return ai !== bi ? ai - bi : runCmp(a, b);
-    });
-  } else {
-    cands.sort(runCmp);
-  }
-
-  lastRunOrder = cands.map(t => t.id);
-  runningIds = lastRunOrder.slice();
   if (!cands.length) {
+    lastRunOrder = []; runningIds = [];
     el.innerHTML = '<div class="empty">No session is currently running.</div>';
     return;
   }
-  el.innerHTML = cands.map(focusBlock).join('');
+
+  // sibling comparator: hold order steady while a panel is expanded
+  const pos = new Map(lastRunOrder.map((id, i) => [id, i]));
+  const frozen = expanded.size && lastRunOrder.length;
+  const cmp = (a, b) => {
+    if (frozen) {
+      const ai = pos.has(a.id) ? pos.get(a.id) : Infinity;
+      const bi = pos.has(b.id) ? pos.get(b.id) : Infinity;
+      if (ai !== bi) return ai - bi;
+    }
+    return runCmp(a, b);
+  };
+
+  // build the tree over the running set
+  const inSet = new Map(cands.map(t => [t.id, t]));
+  const kids = new Map();
+  const roots = [];
+  for (const t of cands) {
+    const pid = t.parentId && inSet.has(t.parentId) ? t.parentId : null;
+    if (pid) (kids.get(pid) || kids.set(pid, []).get(pid)).push(t);
+    else roots.push(t);
+  }
+  roots.sort(cmp);
+  for (const arr of kids.values()) arr.sort(cmp);
+
+  const ordered = [];
+  const seen = new Set();
+  const walk = (t, d) => {
+    if (seen.has(t.id)) return;
+    seen.add(t.id);
+    ordered.push({ t, d });
+    for (const c of (kids.get(t.id) || [])) walk(c, d + 1);
+  };
+  roots.forEach(r => walk(r, 0));
+
+  lastRunOrder = ordered.map(x => x.t.id);
+  runningIds = lastRunOrder.slice();
+  el.innerHTML = ordered.map(({ t, d }) =>
+    `<div class="focus-wrap"${d ? ` style="margin-left:${d * 26}px"` : ''}>${d ? '<span class="tree-tick"></span>' : ''}${focusBlock(t, d)}</div>`
+  ).join('');
 }
 
 function lineageCrumb(l) {
@@ -392,8 +428,10 @@ function lineageLine(t) {
   return `<div class="lineage">${kind ? `<span class="badge agent">${esc(kind)}</span> ` : ''}spawned by ${crumbs} <span class="sep">›</span> <b>this</b></div>`;
 }
 
-function focusBlock(t) {
-  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
+function focusBlock(t, depth) {
+  const nested = depth > 0;
+  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname
+    : t.agentKind ? t.agentKind : t.id.slice(0, 8));
   const badges = [];
   if (t.primaryModel) badges.push(`<span class="badge model">${esc(t.primaryModel)}</span>`);
   if (t.effort) badges.push(`<span class="badge">effort:${esc(t.effort)}</span>`);
@@ -417,10 +455,11 @@ function focusBlock(t) {
   const promptLine = t.lastUserText || t.firstUserText || '';
 
   return `
-    <div class="focus ${open ? 'expanded' : ''}" data-id="${t.id}">
+    <div class="focus ${open ? 'expanded' : ''} ${nested ? 'nested' : ''}" data-id="${t.id}">
       <div class="fhead" onclick="toggleExp('${t.id}')">
         <span class="caret">▸</span>
         <span class="dot ${t.status}"></span>
+        ${nested && (t.agentKind || t.agentNickname) ? `<span class="badge agent">${esc(t.agentKind || t.agentNickname)}</span>` : ''}
         <span class="ftitle">${esc(name)}</span>
         <span class="badge">${ago(t.ageMs)}</span>
         ${t.taskActive ? '<span class="badge" style="color:var(--green)">● active turn</span>' : ''}
@@ -428,9 +467,9 @@ function focusBlock(t) {
         <a href="#" onclick="openDetail('${t.id}');event.stopPropagation();return false" class="tl-link">full timeline →</a>
       </div>
       <div class="fmeta">${proj}${t.primaryModel ? ' · ' + esc(t.primaryModel) : ''}${t.effort ? ' · effort:' + esc(t.effort) : ''}${t.serviceTier ? ' · ' + esc(t.serviceTier) : ''}</div>
-      ${lineageLine(t)}
+      ${nested ? '' : lineageLine(t)}
       <div class="promptmini" data-tip-id="${t.id}">${esc(promptLine)}</div>
-      <div class="chartwrap">${consumptionChart(t.tokenSeries, open ? 230 : 140)}</div>
+      <div class="chartwrap">${consumptionChart(t.tokenSeries, open ? 230 : (nested ? 92 : 140))}</div>
 
       <div class="fdetail">
         <div class="fpath">${esc(t.cwd || '')}</div>
@@ -560,35 +599,41 @@ function renderLiveGrid(threads) {
   const rest = threads.filter(t => !runningIds.includes(t.id));
   const el = $('#live');
   if (!rest.length) { el.innerHTML = '<div class="empty">Nothing else active in the last 15 minutes.</div>'; return; }
-  const byId = Object.fromEntries(threads.map(t => [t.id, t]));
+  const inSet = new Set(rest.map(t => t.id));
   const kids = {}, roots = [];
   for (const t of rest) {
-    if (t.parentId && byId[t.parentId]) (kids[t.parentId] = kids[t.parentId] || []).push(t);
+    if (t.parentId && inSet.has(t.parentId)) (kids[t.parentId] = kids[t.parentId] || []).push(t);
     else roots.push(t);
   }
-  roots.sort((a, b) => b.mtime - a.mtime);
+  const bym = (a, b) => b.mtime - a.mtime;
+  roots.sort(bym);
   const ordered = [];
-  for (const r of roots) {
-    ordered.push(r);
-    for (const k of (kids[r.id] || []).sort((a, b) => b.mtime - a.mtime)) ordered.push(k);
-  }
-  el.innerHTML = ordered.map(miniCard).join('');
+  const seen = new Set();
+  const walk = (t, d) => {
+    if (seen.has(t.id)) return; seen.add(t.id);
+    ordered.push({ t, d });
+    for (const k of (kids[t.id] || []).sort(bym)) walk(k, d + 1);
+  };
+  roots.forEach(r => walk(r, 0));
+  el.innerHTML = ordered.map(({ t, d }) => miniCard(t, d)).join('');
 }
 
-function miniCard(t) {
+function miniCard(t, depth) {
+  const d = depth || 0;
   const cls = ['card', t.status];
-  if (t.isSubagent) cls.push('sub');
-  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname : t.id.slice(0, 8));
+  if (d) cls.push('sub');
+  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname
+    : t.agentKind ? t.agentKind : t.id.slice(0, 8));
   const tk = t.tokens || {};
   const pct = t.contextWindow && tk.total_tokens ? Math.min(100, 100 * tk.total_tokens / t.contextWindow) : 0;
   const proj = t.git ? `${esc(t.git.repo || t.project)} @ ${esc(t.git.branch)}` : esc(t.project || '');
   const badges = [];
   if (t.primaryModel) badges.push(`<span class="badge model">${esc(t.primaryModel)}</span>`);
   if (t.effort) badges.push(`<span class="badge">effort:${esc(t.effort)}</span>`);
-  if (t.agentNickname) badges.push(`<span class="badge agent">↳ ${esc(t.agentNickname)}</span>`);
-  else if (t.agentKind) badges.push(`<span class="badge agent">↳ ${esc(t.agentKind)}</span>`);
-  const parent = t.lineage && t.lineage.length ? t.lineage[t.lineage.length - 1] : null;
-  return `<div class="${cls.join(' ')}" onclick="openDetail('${t.id}')">
+  if (d && (t.agentKind || t.agentNickname)) badges.push(`<span class="badge agent">↳ ${esc(t.agentKind || t.agentNickname)}</span>`);
+  const parent = !d && t.lineage && t.lineage.length ? t.lineage[t.lineage.length - 1] : null;
+  return `<div class="card-wrap"${d ? ` style="margin-left:${d * 24}px"` : ''}>${d ? '<span class="tree-tick"></span>' : ''}
+    <div class="${cls.join(' ')}" onclick="openDetail('${t.id}')">
     <div class="row"><span class="dot ${t.status}"></span><span class="title">${esc(name)}</span>
       <span class="badge">${ago(t.ageMs)}</span></div>
     <div class="meta">${proj}</div>
@@ -598,7 +643,7 @@ function miniCard(t) {
     <div class="tok"><span>total ${fmt(tk.total_tokens)}</span><span>${t.toolCallCount} cmds</span>
       <span>${t.messageCount} msgs</span></div>
     ${t.lastExec ? `<div class="tok hoverable" data-tip-id="${t.id}" style="margin-top:4px;color:var(--green)">$ ${esc(short(t.lastExec.first, 90))}</div>` : ''}
-  </div>`;
+  </div></div>`;
 }
 
 // ---------------------------------------------------------------------------
