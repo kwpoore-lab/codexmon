@@ -1079,9 +1079,11 @@ const CMD_DESC = {
 function cmdDetail(c) {
   const desc = CMD_DESC[c.base];
   const polls = c.pollTargets && c.pollTargets.length
-    ? `<p class="subh" style="margin-top:8px">Processes being polled</p>
-       <table><tbody>${c.pollTargets.map(p => `<tr>
-         <td class="cmd">${esc(short(p.cmd, 110))}</td><td class="num">${p.count}× polled</td></tr>`).join('')}</tbody></table>` : '';
+    ? `<p class="subh" style="margin-top:8px">Processes being polled — tokens pulled into context</p>
+       <table><thead><tr><th>Process</th><th class="num">Polls</th><th class="num">~Tokens</th></tr></thead>
+       <tbody>${c.pollTargets.map(p => `<tr>
+         <td class="cmd" title="${esc(p.cmd)}">${esc(short(p.cmd, 120))}</td>
+         <td class="num">${fmt(p.count)}</td><td class="num">${fmt(p.out)}</td></tr>`).join('')}</tbody></table>` : '';
   const realSamples = (c.samples || []).filter(s => s.cmd && s.cmd !== c.base && s.cmd.length > c.base.length + 1);
   const samples = realSamples.length
     ? `<p class="subh" style="margin-top:8px">Actual invocations (top by output)</p>

@@ -690,7 +690,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 12;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 13;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -826,7 +826,8 @@ function scanSession(file, st) {
         if (call && call.cmd) {
           if (call.poll && call.sid && sessionCmd.has(call.sid)) {
             const tgt = sessionCmd.get(call.sid);
-            rec.pollTargets[tgt] = (rec.pollTargets[tgt] || 0) + 1;
+            const pt = rec.pollTargets[tgt] || (rec.pollTargets[tgt] = { count: 0, out: 0 });
+            pt.count++; pt.out += t;
           }
           // per-base sample of the actual command strings
           const s = rec.samples[base] || (rec.samples[base] = {});
@@ -875,8 +876,8 @@ function scanSession(file, st) {
           .slice(0, 10);
       }
       rec.pollTargets = Object.entries(rec.pollTargets)
-        .map(([cmd, count]) => ({ cmd, count }))
-        .sort((a, b) => b.count - a.count).slice(0, 8);
+        .map(([cmd, v]) => ({ cmd, count: v.count, out: v.out }))
+        .sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 8);
       resolve(rec);
     });
     rl.on('error', () => resolve(rec));
@@ -1013,7 +1014,9 @@ function economy(sinceMs, includeSub) {
       }
       if (base === 'write_stdin' || base === 'wait' || base === 'wait_agent' || base === 'exec_command') {
         for (const pt of r.pollTargets || []) {
-          e._polls.set(pt.cmd, (e._polls.get(pt.cmd) || 0) + pt.count);
+          const m = e._polls.get(pt.cmd) || { count: 0, out: 0 };
+          m.count += pt.count; m.out += pt.out || 0;
+          e._polls.set(pt.cmd, m);
         }
       }
     }
@@ -1036,8 +1039,8 @@ function economy(sinceMs, includeSub) {
   const byCommand = [...byBase.values()].sort((a, b) => b.tokens - a.tokens).map((e) => ({
     base: e.base, tokens: e.tokens, calls: e.calls, truncated: e.truncated,
     samples: [...e._samples.values()].sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 12),
-    pollTargets: [...e._polls.entries()].map(([cmd, count]) => ({ cmd, count }))
-      .sort((a, b) => b.count - a.count).slice(0, 10),
+    pollTargets: [...e._polls.entries()].map(([cmd, v]) => ({ cmd, count: v.count, out: v.out }))
+      .sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 10),
   }));
 
   return {
