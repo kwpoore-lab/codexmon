@@ -122,7 +122,9 @@ Each list has a filter box.
   commands.
 - **By command**: which base commands feed the most text back to the model — tokens, calls,
   avg per call, truncation count. Big + frequent = the best places to add `| tail`, `--quiet`,
-  `rg` instead of `cat`, or request specific JSON fields.
+  `rg` instead of `cat`, or request specific JSON fields. **Click a row** for a plain-language
+  note on what the command does, its actual invocations (with per-invocation output size and
+  truncation), and — for `write_stdin` / `wait` — the underlying processes being polled.
 - **Biggest single outputs**, **repeated commands**, and **poll-dominated sessions** — each a
   click-through to the session, with a one-line note on what it means.
 

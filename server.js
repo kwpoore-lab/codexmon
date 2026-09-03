@@ -690,7 +690,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 11;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 12;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -725,10 +725,13 @@ function scanSession(file, st) {
       outByBase: {},        // base -> {tokens, calls, truncated}
       bigOutputs: [],        // top few { base, cmd, tokens }
       dupes: {},             // exact cmd -> { count, tokens }
+      samples: {},           // base -> { fullCmd -> {count, out, trunc} }
+      pollTargets: {},       // cmd of exec sessions that got polled -> count
     };
     let lastTotal = 0, firstUser = null;
     const seq = [];
     const pending = new Map();   // call_id -> { base, cmd, cap, poll }
+    const sessionCmd = new Map();  // exec session_id -> the cmd that started it
     const estTok = (s) => Math.ceil((s || 0) / 4);   // ~4 chars/token
     const outText = (o) => Array.isArray(o) ? o.map((x) => (x && x.text) || '').join('')
       : (typeof o === 'string' ? o : (o && (o.text || o.content)) || '');
@@ -801,17 +804,36 @@ function scanSession(file, st) {
         if (isPoll) rec.pollTurns++;
         const capM = input.match(/max_output_tokens["'\s:]*?(\d{3,})/);
         const cap = capM ? +capM[1] : 0;
-        if (p.call_id) pending.set(p.call_id, { base, cmd, cap });
+        const sidM = input.match(/session_id["'\s:]*"?(\d+)/);
+        if (p.call_id) pending.set(p.call_id, { base, cmd, cap, poll: isPoll, sid: sidM ? sidM[1] : null });
       } else if (o.type === 'response_item' && (p.type === 'custom_tool_call_output' || p.type === 'function_call_output')) {
         const call = p.call_id && pending.get(p.call_id);
         pending.delete(p.call_id);
-        const t = estTok(outText(p.output).length);
+        const text = outText(p.output);
+        // Codex prints an explicit marker when it clips a command's output
+        const tm = text.match(/truncated output \(original token count:\s*(\d+)\)/);
+        const t = tm ? +tm[1] : estTok(text.length);
         rec.outTokens += t;
         const base = call ? call.base : 'other';
         const g = rec.outByBase[base] || (rec.outByBase[base] = { tokens: 0, calls: 0, truncated: 0 });
         g.tokens += t; g.calls++;
-        const truncated = call && call.cap ? t >= call.cap * 0.9 : t >= 9000;
+        const truncated = !!tm || (call && call.cap ? t >= call.cap * 0.9 : t >= 9000);
         if (truncated) g.truncated++;
+        // remember which exec session a still-running command opened
+        const sidNew = text.match(/"session_id"\s*:\s*(\d+)/);
+        if (sidNew && call && call.cmd && !call.poll) sessionCmd.set(sidNew[1], call.cmd.slice(0, 120));
+
+        if (call && call.cmd) {
+          if (call.poll && call.sid && sessionCmd.has(call.sid)) {
+            const tgt = sessionCmd.get(call.sid);
+            rec.pollTargets[tgt] = (rec.pollTargets[tgt] || 0) + 1;
+          }
+          // per-base sample of the actual command strings
+          const s = rec.samples[base] || (rec.samples[base] = {});
+          const key = call.cmd.slice(0, 200);
+          const e = s[key] || (s[key] = { count: 0, out: 0, trunc: 0 });
+          e.count++; e.out += t; if (truncated) e.trunc++;
+        }
         const isPoll = base === 'wait' || base === 'wait_agent' || base === 'write_stdin' || base === 'exec_command';
         if (call && t >= 4000 && !isPoll) {
           rec.bigOutputs.push({ base, cmd: call.cmd.slice(0, 160), tokens: t, truncated: !!truncated });
@@ -845,6 +867,16 @@ function scanSession(file, st) {
         .filter(([, v]) => v.count >= 3)
         .map(([cmd, v]) => ({ cmd, count: v.count, tokens: v.tokens }))
         .sort((a, b) => b.tokens - a.tokens).slice(0, 12);
+      // keep only the top ~10 distinct command strings per base
+      for (const base of Object.keys(rec.samples)) {
+        rec.samples[base] = Object.entries(rec.samples[base])
+          .map(([cmd, v]) => ({ cmd, count: v.count, out: v.out, trunc: v.trunc }))
+          .sort((a, b) => b.out - a.out || b.count - a.count)
+          .slice(0, 10);
+      }
+      rec.pollTargets = Object.entries(rec.pollTargets)
+        .map(([cmd, count]) => ({ cmd, count }))
+        .sort((a, b) => b.count - a.count).slice(0, 8);
       resolve(rec);
     });
     rl.on('error', () => resolve(rec));
@@ -970,9 +1002,20 @@ function economy(sinceMs, includeSub) {
     tot.modelOutput += r.totals.output || 0;
     tot.modelReasoning += r.totals.reasoning || 0;
     for (const [base, g] of Object.entries(r.outByBase || {})) {
-      const e = byBase.get(base) || (byBase.set(base, { base, tokens: 0, calls: 0, truncated: 0 }).get(base));
+      const e = byBase.get(base) || (byBase.set(base,
+        { base, tokens: 0, calls: 0, truncated: 0, _samples: new Map(), _polls: new Map() }).get(base));
       e.tokens += g.tokens; e.calls += g.calls; e.truncated += g.truncated;
       tot.truncatedCalls += g.truncated;
+      for (const s of (r.samples && r.samples[base]) || []) {
+        const m = e._samples.get(s.cmd) || { cmd: s.cmd, count: 0, out: 0, trunc: 0 };
+        m.count += s.count; m.out += s.out; m.trunc += s.trunc;
+        e._samples.set(s.cmd, m);
+      }
+      if (base === 'write_stdin' || base === 'wait' || base === 'wait_agent' || base === 'exec_command') {
+        for (const pt of r.pollTargets || []) {
+          e._polls.set(pt.cmd, (e._polls.get(pt.cmd) || 0) + pt.count);
+        }
+      }
     }
     for (const b of r.bigOutputs || []) {
       bigOutputs.push({ ...b, sessionId: r.id, prompt: r.prompt, project: r.project });
@@ -990,10 +1033,17 @@ function economy(sinceMs, includeSub) {
       });
     }
   }
+  const byCommand = [...byBase.values()].sort((a, b) => b.tokens - a.tokens).map((e) => ({
+    base: e.base, tokens: e.tokens, calls: e.calls, truncated: e.truncated,
+    samples: [...e._samples.values()].sort((a, b) => b.out - a.out || b.count - a.count).slice(0, 12),
+    pollTargets: [...e._polls.entries()].map(([cmd, count]) => ({ cmd, count }))
+      .sort((a, b) => b.count - a.count).slice(0, 10),
+  }));
+
   return {
     building: !rollupReady, progress: buildProgress,
     totals: tot,
-    byCommand: [...byBase.values()].sort((a, b) => b.tokens - a.tokens),
+    byCommand,
     bigOutputs: bigOutputs.sort((a, b) => b.tokens - a.tokens).slice(0, 40),
     dupes: dupes.sort((a, b) => b.tokens - a.tokens).slice(0, 40),
     pollSessions: pollSessions.filter((s) => s.pollTurns > 0).sort((a, b) => b.pct - a.pct).slice(0, 25),
