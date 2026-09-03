@@ -163,8 +163,7 @@
   .bc-body { display: flex; gap: 6px; }
   .bc-yax { display: flex; flex-direction: column; justify-content: space-between; width: 46px;
     height: 150px; font: 10px/1 var(--mono); color: var(--dim); text-align: right; flex: none; }
-  .bc-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
-  .bc-inner { min-width: 100%; }
+  .bc-scroll { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; }
   .bc-plot { position: relative; display: flex; align-items: flex-end;
     justify-content: space-between; height: 150px; border-bottom: 1px solid var(--border);
     background: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--border) calc(25% - 1px), var(--border) 25%); }
@@ -997,8 +996,9 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
   const n = buckets.length;
   const bw = Math.min(13, Math.max(3, Math.round(720 / n)));   // bar width px
   const slot = Math.max(bw + 2, 6);                            // bar + gap
-  const scrollW = n * slot > 960 ? n * slot : 0;               // 0 = fit, else scroll
-  const step = Math.max(1, Math.ceil(n / Math.floor((scrollW || 960) / 66)));
+  const wantW = n * slot;
+  const scrolls = wantW > 1180;                                // (title hint only)
+  const step = Math.max(1, Math.ceil(n / Math.floor(Math.max(wantW, 980) / 66)));
   let lineSvg = '';
   const line = opts.line;
   if (line && line.length === n && line.some(v => v)) {
@@ -1009,10 +1009,10 @@ function tbarChart(buckets, valueFn, label, opts = {}) {
   }
   const lbl = (b) => b.includes(':') ? b.slice(11) : b.length > 7 ? b.slice(5) : b;
   return `<div class="bchart">
-    ${label ? `<div class="bc-title">${esc(label)}${opts.lineLabel ? ` · <span class="bc-l2">${esc(opts.lineLabel)} (line)</span>` : ''}${scrollW ? ' · scroll →' : ''}</div>` : ''}
+    ${label ? `<div class="bc-title">${esc(label)}${opts.lineLabel ? ` · <span class="bc-l2">${esc(opts.lineLabel)} (line)</span>` : ''}${scrolls ? ' · scroll →' : ''}</div>` : ''}
     <div class="bc-body">
       <div class="bc-yax">${[1, 0.75, 0.5, 0.25, 0].map(f => `<span>${kfmt(max * f)}</span>`).join('')}</div>
-      <div class="bc-scroll"><div class="bc-inner"${scrollW ? ` style="min-width:${scrollW}px"` : ''}>
+      <div class="bc-scroll"><div class="bc-inner" style="width:max(100%, ${wantW}px)">
         <div class="bc-plot">
           ${vals.map((v, i) => `<div class="bc-bar" style="width:${bw}px;height:${(v / max * 100).toFixed(1)}%" title="${esc(buckets[i])} — ${fmt(v)}"></div>`).join('')}
           ${lineSvg}
