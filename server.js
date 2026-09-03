@@ -990,9 +990,24 @@ function windowSessions(recs, period) {
   return recs.filter((r) => new Date(r.startedAt).getTime() >= cutoff);
 }
 
+// every 15-minute slot for the last 24h, so the hour chart shows the full span
+function hourWindowBuckets() {
+  const p2 = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  now.setSeconds(0, 0);
+  now.setMinutes(Math.floor(now.getMinutes() / 15) * 15);
+  const out = [];
+  for (let t = now.getTime() - 24 * 3600 * 1000; t <= now.getTime(); t += 15 * 60 * 1000) {
+    const d = new Date(t);
+    out.push(`${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`);
+  }
+  return out;
+}
+const seedBuckets = (period) => new Set(period === 'hour' ? hourWindowBuckets() : []);
+
 function trends(period, includeSub, model, effort) {
   const recs = windowSessions(pickSessions(includeSub, model, effort), period);
-  const buckets = new Set();
+  const buckets = seedBuckets(period);
   const totals = {};
   const cmdMap = new Map();
   const promptMap = new Map();
@@ -1113,7 +1128,7 @@ function economy(sinceMs, includeSub, model, effort) {
 // per day|week|month bucket, plus per-invocation and per-polled-process series.
 function commandTrend(base, period, includeSub, model, effort) {
   const recs = windowSessions(pickSessions(includeSub, model, effort), period);
-  const buckets = new Set();
+  const buckets = seedBuckets(period);
   const series = { outTokens: {}, calls: {}, truncated: {}, delta: {} };
   const bump = (k, b, v) => { series[k][b] = (series[k][b] || 0) + v; };
   const sampMap = new Map();
