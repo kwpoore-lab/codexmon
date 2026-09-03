@@ -322,7 +322,7 @@ function focusBlock(t) {
         <span class="ftitle">${esc(name)}</span>
         <span class="badge">${ago(t.ageMs)}</span>
         ${t.taskActive ? '<span class="badge" style="color:var(--green)">● active turn</span>' : ''}
-        <span class="fhead-tok">${kfmtN(tk.total_tokens)} tok${ctxPct != null ? ` · ${ctxPct}% ctx` : ''} · ${t.toolCallCount} cmds · ${t.turnsCompleted}/${t.turnsStarted} turns</span>
+        <span class="fhead-tok">${kfmtN(t.cumReqTokens || tk.total_tokens)} tok${ctxPct != null ? ` · ${ctxPct}% ctx` : ''} · ${t.toolCallCount} cmds · ${t.turnsCompleted}/${t.turnsStarted} turns${t.compactions ? ` · ${t.compactions}⤺` : ''}</span>
         <a href="#" onclick="openDetail('${t.id}');event.stopPropagation();return false" class="tl-link">full timeline →</a>
       </div>
       <div class="fmeta">${proj}${t.primaryModel ? ' · ' + esc(t.primaryModel) : ''}${t.effort ? ' · effort:' + esc(t.effort) : ''}${t.serviceTier ? ' · ' + esc(t.serviceTier) : ''}</div>
@@ -334,8 +334,9 @@ function focusBlock(t) {
         <div class="row" style="margin:6px 0">${badges.join(' ')}</div>
         ${prompt}${latest}
         <div class="statline">
-          <span><b>${fmt(tk.total_tokens)}</b> total tokens</span>
-          <span><b>${fmt(t.contextWindow)}</b> ctx window${ctxPct != null ? ` (${ctxPct}% of last request)` : ''}</span>
+          <span><b>${fmt(t.cumReqTokens)}</b> billed tokens (Σ per request)</span>
+          ${t.compactions ? `<span title="context compacted — the raw counter reset">${t.compactions}× compacted</span>` : ''}
+          <span><b>${fmt(t.contextWindow)}</b> ctx window${ctxPct != null ? ` · ${ctxPct}% full` : ''}</span>
           <span>in <b>${fmt(tk.input_tokens)}</b></span>
           <span>cached <b>${fmt(tk.cached_input_tokens)}</b></span>
           <span>out <b>${fmt(tk.output_tokens)}</b></span>
@@ -386,7 +387,11 @@ function kfmtN(v) {
 }
 
 // ---------------------------------------------------------------------------
-// consumption chart: cumulative total (area) + per-turn tokens (bars)
+// consumption chart
+//  line/area = our own running sum of per-request tokens (monotonic — the raw
+//  Codex counter resets on context compaction, so we don't trust it here)
+//  bars      = per-turn tokens
+//  dashed markers = context compactions (raw counter reset points)
 // ---------------------------------------------------------------------------
 function consumptionChart(series, H) {
   H = H || 230;
@@ -399,16 +404,18 @@ function consumptionChart(series, H) {
   const span = (t1 - t0) || 1;
   const x = (t) => PL + ((t - t0) / span) * iw;
 
-  const totMax = Math.max(...series.map(p => p.total)) || 1;
-  const yT = (v) => PT + ih - (v / totMax) * ih;
+  // running billed total: prefer server-computed `cum`, else accumulate `last`
+  let acc = 0;
+  const cum = series.map(p => (p.cum != null ? p.cum : (acc += (p.last || 0))));
+  const base = cum[0];                      // window may start mid-session
+  const cMax = (cum[cum.length - 1] - base) || 1;
+  const yC = (v) => PT + ih - ((v - base) / cMax) * ih;
   const lastMax = Math.max(...series.map(p => p.last || 0)) || 1;
 
-  // area path for cumulative
-  let d = `M ${x(times[0]).toFixed(1)} ${yT(series[0].total).toFixed(1)}`;
-  series.forEach((p, i) => { d += ` L ${x(times[i]).toFixed(1)} ${yT(p.total).toFixed(1)}`; });
+  let d = `M ${x(times[0]).toFixed(1)} ${yC(cum[0]).toFixed(1)}`;
+  cum.forEach((v, i) => { d += ` L ${x(times[i]).toFixed(1)} ${yC(v).toFixed(1)}`; });
   const area = d + ` L ${x(times[times.length - 1]).toFixed(1)} ${(PT + ih).toFixed(1)} L ${x(times[0]).toFixed(1)} ${(PT + ih).toFixed(1)} Z`;
 
-  // per-turn bars (own scale, faint)
   const bw = Math.max(1, iw / series.length * 0.6);
   const bars = series.map((p, i) => {
     if (!p.last) return '';
@@ -416,22 +423,25 @@ function consumptionChart(series, H) {
     return `<rect x="${(x(times[i]) - bw / 2).toFixed(1)}" y="${(PT + ih - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--purple)" opacity="0.28"/>`;
   }).join('');
 
-  // gridlines + y labels (cumulative)
+  const marks = series.map((p, i) => p.reset
+    ? `<line x1="${x(times[i]).toFixed(1)}" y1="${PT}" x2="${x(times[i]).toFixed(1)}" y2="${PT + ih}" stroke="var(--yellow)" stroke-width="1" stroke-dasharray="3 2"/>
+       <text x="${x(times[i]).toFixed(1)}" y="${PT + 9}" text-anchor="middle" fill="var(--yellow)">compacted</text>` : '').join('');
+
   let grid = '';
   for (let g = 0; g <= 4; g++) {
-    const v = totMax * g / 4, yy = yT(v);
+    const v = base + cMax * g / 4, yy = yC(v);
     grid += `<line x1="${PL}" y1="${yy.toFixed(1)}" x2="${W - PR}" y2="${yy.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`;
     grid += `<text x="${PL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end">${kfmt(v)}</text>`;
   }
   const tlabel = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" style="height:${H}px" preserveAspectRatio="none">
-    ${grid}${bars}
+    ${grid}${bars}${marks}
     <path d="${area}" fill="var(--accent)" opacity="0.16"/>
     <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
     <text x="${PL}" y="${H - 6}">${tlabel(t0)}</text>
     <text x="${W - PR}" y="${H - 6}" text-anchor="end">${tlabel(t1)}</text>
-    <text x="${PL + iw / 2}" y="${H - 6}" text-anchor="middle">cumulative tokens (line/area) · per-turn tokens (bars)</text>
+    <text x="${PL + iw / 2}" y="${H - 6}" text-anchor="middle">billed tokens, cumulative (line) · per-turn tokens (bars)</text>
   </svg>`;
 }
 function kfmt(v) {
@@ -574,8 +584,9 @@ async function openDetail(id) {
       <dt>client</dt><dd>${esc(s.originator || '–')} · ${esc(s.cliVersion || '')}</dd>
       <dt>kind</dt><dd>${s.isSubagent ? 'subagent depth ' + s.depth : 'main'}</dd>
       <dt>started</dt><dd>${esc(localDateTime(s.startedAt))}</dd>
-      <dt>tokens</dt><dd>total ${fmt(tk.total_tokens)} · in ${fmt(tk.input_tokens)} · cached ${fmt(tk.cached_input_tokens)} · out ${fmt(tk.output_tokens)} · reason ${fmt(tk.reasoning_output_tokens)}</dd>
-      <dt>context window</dt><dd>${fmt(s.contextWindow)}</dd>
+      <dt>billed tokens</dt><dd>${fmt(s.cumReqTokens)} (Σ per request)${s.compactions ? ` · ${s.compactions}× compacted` : ''}</dd>
+      <dt>tokens</dt><dd>in ${fmt(tk.input_tokens)} · cached ${fmt(tk.cached_input_tokens)} · out ${fmt(tk.output_tokens)} · reason ${fmt(tk.reasoning_output_tokens)}</dd>
+      <dt>context window</dt><dd>${fmt(s.contextWindow)} · raw counter now ${fmt(tk.total_tokens)}</dd>
       <dt>activity</dt><dd>${s.messageCount} msgs · ${s.toolCallCount} cmds · ${s.turnsCompleted}/${s.turnsStarted} turns</dd>
     </dl>
     <div class="chartwrap">${consumptionChart(s.tokenSeries)}</div>
@@ -705,7 +716,7 @@ function renderTrends() {
 
   $('#trends').innerHTML = `
     <div class="tgrand">
-      <span><b>${fmt(g.tokens)}</b> tokens</span>
+      <span><b>${fmt(g.tokens)}</b> billed tokens</span>
       <span><b>${fmt(g.sessions)}</b> sessions</span>
       <span><b>${fmt(g.commands)}</b> commands</span>
       <span>in <b>${fmt(g.input)}</b></span>
@@ -714,7 +725,7 @@ function renderTrends() {
       <span>reasoning <b>${fmt(g.reasoning)}</b></span>
       <span style="margin-left:auto">${B.length} ${trendPeriod}s · ${d.sessions} sessions${trendSub ? ' (incl. subagents)' : ''}</span>
     </div>
-    ${tbarChart(B, totalsByBucket, 'total tokens per ' + trendPeriod)}
+    ${tbarChart(B, totalsByBucket, 'billed tokens per ' + trendPeriod)}
     <div class="tcols">
       <div>
         <p class="subh">By base command — click a row for its trend</p>
@@ -730,60 +741,62 @@ function renderTrends() {
   renderTrendTables();
 }
 
+let trendCmdRows = [], trendPromptRows = [];
+
+function trendDetailRows(r, B) {
+  return `<tr class="trow-detail"><td colspan="4">
+    ${tbarChart(B, b => (r.per[b] && r.per[b].tokens) || 0, 'tokens per ' + trendPeriod)}
+    <div style="overflow-x:auto"><table><tbody>
+      <tr class="lbl-row"><td>${trendPeriod}</td>${B.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
+      <tr><td class="num">tok</td>${B.map(b => `<td class="num">${kfmt((r.per[b] && r.per[b].tokens) || 0)}</td>`).join('')}</tr>
+      <tr><td class="num">runs</td>${B.map(b => `<td class="num">${(r.per[b] && r.per[b].count) || 0}</td>`).join('')}</tr>
+    </tbody></table></div></td></tr>`;
+}
+
 function renderTrendTables() {
   const d = trendData, B = d.buckets;
-  const cf = ($('#cmdFilter') || {}).value ? $('#cmdFilter').value.toLowerCase() : '';
-  const pf = ($('#promptFilter') || {}).value ? $('#promptFilter').value.toLowerCase() : '';
+  const cf = (($('#cmdFilter') || {}).value || '').toLowerCase();
+  const pf = (($('#promptFilter') || {}).value || '').toLowerCase();
 
-  const cmdRows = d.byCommand.filter(r => r.base.toLowerCase().includes(cf)).slice(0, 200);
+  trendCmdRows = d.byCommand.filter(r => r.base.toLowerCase().includes(cf)).slice(0, 200);
   $('#cmdTable').innerHTML = `<table><thead><tr>
     <th>Base</th><th class="num">Total tok</th><th class="num">Runs</th><th class="trend-cell">Trend</th></tr></thead><tbody>
-    ${cmdRows.map(r => {
+    ${trendCmdRows.map((r, i) => {
       const open = tExpanded.cmd.has(r.base);
-      let h = `<tr onclick="toggleTrend('cmd', ${JSON.stringify(r.base)})" style="cursor:pointer">
+      return `<tr class="trow" data-tkind="cmd" data-ti="${i}" style="cursor:pointer">
         <td class="base">${open ? '▾ ' : '▸ '}${esc(r.base)}</td>
         <td class="num">${fmt(r.total)}</td><td class="num">${fmt(r.count)}</td>
-        <td>${tspark(r.per, B, 'tokens')}</td></tr>`;
-      if (open) {
-        h += `<tr class="trow-detail"><td colspan="4">
-          ${tbarChart(B, b => (r.per[b] && r.per[b].tokens) || 0, r.base + ' — tokens per ' + trendPeriod)}
-          <table><tbody><tr class="lbl-row"><td>${trendPeriod}</td>${B.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
-          <tr><td class="num">tok</td>${B.map(b => `<td class="num">${kfmt((r.per[b] && r.per[b].tokens) || 0)}</td>`).join('')}</tr>
-          <tr><td class="num">runs</td>${B.map(b => `<td class="num">${(r.per[b] && r.per[b].count) || 0}</td>`).join('')}</tr>
-          </tbody></table></td></tr>`;
-      }
-      return h;
+        <td>${tspark(r.per, B, 'tokens')}</td></tr>`
+        + (open ? trendDetailRows(r, B) : '');
     }).join('')}
   </tbody></table>`;
 
-  const promptRows = d.byPrompt.filter(r => r.prompt.toLowerCase().includes(pf)).slice(0, 200);
+  trendPromptRows = d.byPrompt.filter(r => r.prompt.toLowerCase().includes(pf)).slice(0, 200);
   $('#promptTable').innerHTML = `<table><thead><tr>
     <th>Prompt</th><th class="num">Total tok</th><th class="num">Sess</th><th class="trend-cell">Trend</th></tr></thead><tbody>
-    ${promptRows.map((r, i) => {
-      const id = 'p' + i;
+    ${trendPromptRows.map((r, i) => {
       const open = tExpanded.prompt.has(r.prompt);
-      let h = `<tr onclick="toggleTrend('prompt', ${JSON.stringify(r.prompt)})" style="cursor:pointer">
-        <td style="max-width:340px" title="${esc(r.prompt)}">${open ? '▾ ' : '▸ '}${esc(short(r.prompt, 70))}
+      return `<tr class="trow" data-tkind="prompt" data-ti="${i}" style="cursor:pointer">
+        <td style="max-width:340px" title="${esc(r.prompt).replace(/"/g, '&quot;')}">${open ? '▾ ' : '▸ '}${esc(short(r.prompt, 70))}
           ${r.project ? `<span class="badge">${esc(r.project)}</span>` : ''}</td>
         <td class="num">${fmt(r.total)}</td><td class="num">${fmt(r.count)}</td>
-        <td>${tspark(r.per, B, 'tokens')}</td></tr>`;
-      if (open) {
-        h += `<tr class="trow-detail"><td colspan="4">
-          ${tbarChart(B, b => (r.per[b] && r.per[b].tokens) || 0, 'tokens per ' + trendPeriod)}
-          <table><tbody><tr class="lbl-row"><td>${trendPeriod}</td>${B.map(b => `<td class="num">${b.slice(5)}</td>`).join('')}</tr>
-          <tr><td class="num">tok</td>${B.map(b => `<td class="num">${kfmt((r.per[b] && r.per[b].tokens) || 0)}</td>`).join('')}</tr>
-          </tbody></table></td></tr>`;
-      }
-      return h;
+        <td>${tspark(r.per, B, 'tokens')}</td></tr>`
+        + (open ? trendDetailRows(r, B) : '');
     }).join('')}
   </tbody></table>`;
 }
 
-function toggleTrend(kind, key) {
+document.addEventListener('click', (e) => {
+  const tr = e.target.closest('.trow');
+  if (!tr) return;
+  const kind = tr.dataset.tkind;
+  const r = (kind === 'cmd' ? trendCmdRows : trendPromptRows)[+tr.dataset.ti];
+  if (!r) return;
+  const key = kind === 'cmd' ? r.base : r.prompt;
   const s = tExpanded[kind];
   if (s.has(key)) s.delete(key); else s.add(key);
   renderTrendTables();
-}
+});
 
 $('#periodSeg').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;

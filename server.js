@@ -274,12 +274,19 @@ function applyLine(sum, raw) {
   if (o.type === 'event_msg' && p.type === 'token_count') {
     const info = p.info || {};
     if (info.total_token_usage) {
+      const newTotal = info.total_token_usage.total_tokens || 0;
+      // Codex's total_token_usage is per-context-window: it drops to ~0 when the
+      // conversation is compacted. Track our own monotonic running sum of
+      // per-request tokens (what's actually billed) and flag the reset points.
+      const compacted = sum.lastTotalTokens > 1000 && newTotal < sum.lastTotalTokens * 0.5;
       sum.tokens = info.total_token_usage;
-      sum.lastTotalTokens = info.total_token_usage.total_tokens || 0;
+      sum.lastTotalTokens = newTotal;
       sum.lastReqTokens = (info.last_token_usage && info.last_token_usage.total_tokens) || 0;
       sum.lastReqInput = (info.last_token_usage && info.last_token_usage.input_tokens) || sum.lastReqInput;
-      sum.tokenSeries.push({ t: ts, total: sum.lastTotalTokens, last: sum.lastReqTokens });
-      if (sum.tokenSeries.length > 2000) sum.tokenSeries.shift();
+      sum.cumReqTokens = (sum.cumReqTokens || 0) + sum.lastReqTokens;
+      if (compacted) sum.compactions = (sum.compactions || 0) + 1;
+      sum.tokenSeries.push({ t: ts, total: newTotal, last: sum.lastReqTokens, cum: sum.cumReqTokens, reset: compacted || undefined });
+      if (sum.tokenSeries.length > 4000) sum.tokenSeries.shift();
     }
     if (info.model_context_window) sum.contextWindow = info.model_context_window;
     return;
@@ -505,6 +512,8 @@ function decorate(sum, full) {
     tokens: sum.tokens,
     lastReqTokens: sum.lastReqTokens,
     lastReqInput: sum.lastReqInput,
+    cumReqTokens: sum.cumReqTokens || 0,
+    compactions: sum.compactions || 0,
     contextUsed: sum.contextWindow && sum.lastReqInput
       ? Math.min(100, Math.round(100 * sum.lastReqInput / sum.contextWindow)) : null,
     tokenSeries: full ? sum.tokenSeries.slice(-600) : sum.tokenSeries.slice(-60),
@@ -605,7 +614,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 7;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 8;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -670,6 +679,9 @@ function scanSession(file, st) {
         rec.totals.output = u.output_tokens || rec.totals.output;
         rec.totals.cached = u.cached_input_tokens || rec.totals.cached;
         rec.totals.reasoning = u.reasoning_output_tokens || rec.totals.reasoning;
+        // monotonic billed total (raw counter resets on context compaction)
+        rec.totals.billed = (rec.totals.billed || 0) +
+          ((p.info.last_token_usage && p.info.last_token_usage.total_tokens) || 0);
       } else if (o.type === 'response_item' && (p.type === 'custom_tool_call' || p.type === 'function_call')) {
         const input = toolInput(p);
         const cmd = extractCmd(p.name, input);
@@ -792,10 +804,11 @@ function trends(period, includeSub) {
   const cmdMap = new Map();
   const promptMap = new Map();
   for (const r of recs) {
+    const billed = r.totals.billed || r.totals.total;
     const b = bucketKey(period, r.startedAt);
     buckets.add(b);
     const T = totals[b] || (totals[b] = { tokens: 0, sessions: 0, commands: 0, input: 0, output: 0, cached: 0, reasoning: 0 });
-    T.tokens += r.totals.total; T.sessions++;
+    T.tokens += billed; T.sessions++;
     T.input += r.totals.input; T.output += r.totals.output;
     T.cached += r.totals.cached; T.reasoning += r.totals.reasoning;
     for (const c of r.cmds) {
@@ -808,10 +821,10 @@ function trends(period, includeSub) {
     if (r.prompt) {
       const key = r.prompt.toLowerCase().slice(0, 120);
       const g = promptMap.get(key) || (promptMap.set(key, { prompt: r.prompt, project: r.project, total: 0, count: 0, per: {} }).get(key));
-      g.total += r.totals.total; g.count += 1;
+      g.total += billed; g.count += 1;
       if (!g.project && r.project) g.project = r.project;
       const pc = g.per[b] || (g.per[b] = { tokens: 0, count: 0 });
-      pc.tokens += r.totals.total; pc.count += 1;
+      pc.tokens += billed; pc.count += 1;
     }
   }
   const grand = Object.values(totals).reduce((a, t) => {

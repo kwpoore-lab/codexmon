@@ -47,8 +47,13 @@ breakdown (total / ctx window / in / cached / out / reasoning), and two tables �
 - **Consumption by base command**: the same commands grouped by base verb with parameters
   stripped (`git status`, `sed`, `apply_patch`, `rg`, …) — runs + summed Δ tokens, biggest first
 
-"% ctx" is the last request's input tokens over the model context window (real occupancy) —
-not the cumulative session total, which far exceeds the window.
+"% ctx" is the last request's input tokens over the model context window (real occupancy).
+
+**Billed tokens vs. the raw counter.** Codex's `total_token_usage` is per-context-window: it
+drops back to ~0 whenever the conversation is compacted, so a long session's raw counter
+sawtooths and *undercounts* the total. codexmon instead tracks its own monotonic running sum of
+per-request tokens (`last_token_usage`) — that's the "billed tokens" figure and the consumption
+chart's line. Compaction points are marked on the chart with a dashed rule.
 
 Hovering the prompt line (or a card's `$` command line) pops the **full command history for the
 current turn** — every command and follow-up the agent has run since the last `task_started`,
