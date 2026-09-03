@@ -247,6 +247,12 @@ const hhmmss = (ts) => {
   return isNaN(d) ? String(ts).slice(11, 19)
     : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 };
+const dateHM = (ts) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return String(ts);
+  return d.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+};
 const localDateTime = (ts) => {
   if (!ts) return '–';
   const d = new Date(ts);
@@ -649,7 +655,7 @@ function renderHistory() {
       const kind = t.isSubagent ? `subagent${t.agentNickname ? ' · ' + esc(t.agentNickname) : ''}` : 'main';
       const models = [t.model, t.autoReview ? '+review' : null].filter(Boolean).join(' ');
       return `<tr onclick="openDetail('${t.id}')" style="cursor:pointer">
-        <td class="num">${hhmmss(t.startedAt)}</td>
+        <td class="num">${dateHM(t.startedAt)}</td>
         <td>${esc(name)}</td>
         <td style="max-width:280px;color:var(--dim)">${esc(short(t.prompt, 100))}</td>
         <td>${esc(t.repo || t.project || '')}${t.branch ? ' @ ' + esc(t.branch) : ''}</td>
