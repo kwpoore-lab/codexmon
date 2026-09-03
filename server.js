@@ -235,14 +235,25 @@ function applyLine(sum, raw) {
       };
     }
     const src = p.source;
-    if (src && typeof src === 'object' && src.subagent && src.subagent.thread_spawn) {
-      const sp = src.subagent.thread_spawn;
+    if (src && typeof src === 'object' && src.subagent) {
       sum.isSubagent = true;
-      sum.parentId = sp.parent_thread_id || p.parent_thread_id || null;
-      sum.depth = sp.depth || 1;
-      sum.agentNickname = sp.agent_nickname || null;
+      const sp = src.subagent.thread_spawn;
+      if (sp) {
+        sum.parentId = sp.parent_thread_id || p.parent_thread_id || null;
+        sum.depth = sp.depth || 1;
+        sum.agentNickname = sp.agent_nickname || null;
+        sum.agentKind = sp.agent_role || 'subagent';
+      }
+      // e.g. { subagent: { other: "guardian" } } — Codex's auto-approval reviewer
+      if (typeof src.subagent.other === 'string') sum.agentKind = src.subagent.other;
+      if (!sum.parentId && p.parent_thread_id && p.parent_thread_id !== sum.id) {
+        sum.parentId = p.parent_thread_id;
+      }
+      if (!sum.depth) sum.depth = 1;
     } else if (p.parent_thread_id && p.parent_thread_id !== sum.id) {
       sum.parentId = p.parent_thread_id;
+      sum.isSubagent = true;
+      sum.depth = sum.depth || 1;
     }
     return;
   }
@@ -483,6 +494,40 @@ function commandStats(cmds) {
   return [...m.values()].sort((a, b) => b.tokens - a.tokens || b.count - a.count);
 }
 
+// Resolve a session id to a short label from whatever we know about it.
+function sessionLabel(id) {
+  const out = { id };
+  if (threadNames[id]) out.title = threadNames[id];
+  const rec = rollupCache && rollupCache.sessions.get(id);
+  if (rec) {
+    if (!out.title && rec.prompt) out.title = rec.prompt.slice(0, 80);
+    out.kind = rec.agentKind || (rec.isSubagent ? 'subagent' : 'main');
+    out.project = rec.project;
+  }
+  const ent = [...cache.values()].find((e) => e.summary && e.summary.id === id);
+  if (ent) {
+    const s = ent.summary;
+    if (!out.title) out.title = threadNames[id] || s.firstUserText && s.firstUserText.slice(0, 80) || null;
+    if (!out.kind) out.kind = s.agentKind || (s.isSubagent ? 'subagent' : 'main');
+  }
+  return out;
+}
+
+// Walk parent_thread_id up to the root user prompt (root-first).
+function lineageOf(parentId) {
+  const chain = [];
+  const seen = new Set();
+  let cur = parentId, guard = 0;
+  while (cur && !seen.has(cur) && guard++ < 12) {
+    seen.add(cur);
+    chain.push(sessionLabel(cur));
+    const rec = rollupCache && rollupCache.sessions.get(cur);
+    const ent = rec ? null : [...cache.values()].find((e) => e.summary && e.summary.id === cur);
+    cur = rec ? rec.parentId : (ent ? ent.summary.parentId : null);
+  }
+  return chain.reverse();
+}
+
 function decorate(sum, full) {
   loadThreadNames();
   const age = Date.now() - (sum.mtimeMs || 0);
@@ -494,6 +539,8 @@ function decorate(sum, full) {
     isSubagent: sum.isSubagent,
     depth: sum.depth,
     agentNickname: sum.agentNickname,
+    agentKind: sum.agentKind || null,
+    lineage: sum.parentId ? lineageOf(sum.parentId) : [],
     project: sum.project,
     cwd: sum.cwd,
     git: sum.git,
@@ -643,7 +690,7 @@ function allSessionFiles() {
   return out;
 }
 
-const ROLLUP_VERSION = 10;   // bump to force a full re-scan when the parser changes
+const ROLLUP_VERSION = 11;   // bump to force a full re-scan when the parser changes
 function loadRollupCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
@@ -669,6 +716,7 @@ function scanSession(file, st) {
       id: fileUuid(file), file, mtime: st.mtimeMs, size: st.size,
       startedAt: null, prompt: null, project: null, isSubagent: false,
       model: null, effort: null, repo: null, branch: null, agentNickname: null, depth: 0,
+      parentId: null, agentKind: null,
       autoReview: false, compactions: 0, originator: null,
       totals: { total: 0, input: 0, output: 0, cached: 0, reasoning: 0, billed: 0 },
       cmds: [],
@@ -708,10 +756,20 @@ function scanSession(file, st) {
             ? p.git.repository_url.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '') : null;
         }
         const src = p.source;
-        if (src && typeof src === 'object' && src.subagent && src.subagent.thread_spawn) {
+        if (src && typeof src === 'object' && src.subagent) {
           rec.isSubagent = true;
-          rec.agentNickname = src.subagent.thread_spawn.agent_nickname || null;
-          rec.depth = src.subagent.thread_spawn.depth || 1;
+          const sp = src.subagent.thread_spawn;
+          if (sp) {
+            rec.agentNickname = sp.agent_nickname || null;
+            rec.depth = sp.depth || 1;
+            rec.parentId = sp.parent_thread_id || p.parent_thread_id || null;
+            rec.agentKind = sp.agent_role || 'subagent';
+          }
+          if (typeof src.subagent.other === 'string') rec.agentKind = src.subagent.other;
+        }
+        if (!rec.parentId && p.parent_thread_id && p.parent_thread_id !== rec.id) {
+          rec.parentId = p.parent_thread_id;
+          rec.isSubagent = true;
         }
       } else if (o.type === 'turn_context') {
         if (p.model === 'codex-auto-review') rec.autoReview = true;
@@ -1036,6 +1094,8 @@ const server = http.createServer((req, res) => {
         repo: r.repo, branch: r.branch,
         model: r.model, effort: r.effort, autoReview: r.autoReview,
         isSubagent: r.isSubagent, agentNickname: r.agentNickname, depth: r.depth,
+        agentKind: r.agentKind, parentId: r.parentId,
+        parent: r.parentId ? sessionLabel(r.parentId) : null,
         tokens: r.totals.billed || r.totals.total,
         rawTokens: r.totals.total,
         compactions: r.compactions,

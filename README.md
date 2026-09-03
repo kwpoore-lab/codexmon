@@ -42,6 +42,10 @@ status line.
 One panel *per active agent* (any session written to in the last 15s, or mid-turn). Collapsed
 by default so many agents fit on one screen; click the ▸ caret to expand.
 
+Subagents show their **lineage** — `spawned by <parent> › <grandparent> › … › this` — walked up
+`parent_thread_id` to the root user prompt, each hop clickable. Codex's auto-approval reviewer
+appears here as a `guardian` child of the thread whose actions it's vetting.
+
 Collapsed shows: title, age, active-turn flag, a one-line token/ctx/cmd/turn summary,
 project · model · effort · tier, the latest message, and the **consumption-over-time chart**
 (cumulative tokens as area/line, per-turn tokens as bars).
