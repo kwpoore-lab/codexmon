@@ -286,6 +286,8 @@ function ago(ms) {
   return Math.round(m / 60) + 'h ago';
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+// use inside a double-quoted HTML attribute
+function attr(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 // rollout timestamps are UTC ISO strings — render them in the viewer's local time
 const hhmmss = (ts) => {
   if (!ts) return '';
@@ -479,7 +481,7 @@ function syntheticRow(t) {
 
 function lineageCrumb(l) {
   return `<a href="#" onclick="openDetail('${l.id}');event.stopPropagation();return false"
-    title="${esc(l.title || l.id)}">${esc(l.title ? short(l.title, 46) : l.id.slice(0, 8))}</a>`;
+    title="${attr(l.title || l.id)}">${esc(l.title ? short(l.title, 46) : l.id.slice(0, 8))}</a>`;
 }
 function lineageLine(t) {
   if (!t.lineage || !t.lineage.length) return '';
@@ -551,7 +553,7 @@ function focusBlock(t, depth) {
               <th>Time</th><th>Command</th><th class="num">Δ tok</th><th class="num">Total</th></tr></thead>
               <tbody>${cmds.length ? cmds.map(c => `<tr>
                 <td class="num">${hhmmss(c.ts)}</td>
-                <td class="cmd" title="${esc(c.cmd)}">${esc(short(c.cmd, 140))}</td>
+                <td class="cmd" title="${attr(c.cmd)}">${esc(short(c.cmd, 140))}</td>
                 <td class="num">${c.delta ? '+' + fmt(c.delta) : '·'}</td>
                 <td class="num">${fmt(c.total)}</td></tr>`).join('')
                 : '<tr><td colspan="4" class="empty">No commands yet.</td></tr>'}
@@ -1187,8 +1189,8 @@ function ctPanel(base) {
   const rpf = ctPerFn(rowMetric);
   const sampRows = (rows) => rows.map(r => {
     const o = open.has(r.cmd);
-    let h = `<tr class="ctrow" data-ct-row="${esc(r.cmd)}" data-ct-rowbase="${esc(base)}" style="cursor:pointer">
-      <td class="cmd" title="${esc(r.cmd)}">${o ? '▾ ' : '▸ '}${esc(short(r.cmd, 120))}</td>
+    let h = `<tr class="ctrow" data-ct-row="${attr(r.cmd)}" data-ct-rowbase="${attr(base)}" style="cursor:pointer">
+      <td class="cmd" title="${attr(r.cmd)}">${o ? '▾ ' : '▸ '}${esc(short(r.cmd, 120))}</td>
       <td class="num">${fmt(r.count)}</td>
       <td class="num">${fmt(r.out)}</td>
       <td class="trend-cell">${tspark(r.per, B, rpf)}</td></tr>`;
