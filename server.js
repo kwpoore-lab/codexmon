@@ -960,7 +960,10 @@ setInterval(broadcast, TICK_MS);
 // ---------------------------------------------------------------------------
 // http
 // ---------------------------------------------------------------------------
-const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+const INDEX_PATH = path.join(__dirname, 'index.html');
+const readIndex = () => {
+  try { return fs.readFileSync(INDEX_PATH, 'utf8'); } catch (_) { return '<!doctype html><title>codexmon</title>index.html missing'; }
+};
 
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -974,7 +977,7 @@ const server = http.createServer((req, res) => {
 
   if (pathn === '/' || pathn === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(INDEX_HTML);
+    res.end(readIndex());
     return;
   }
 
