@@ -346,15 +346,31 @@ function runCmp(a, b) {
   return (b.startedAt || '').localeCompare(a.startedAt || '') || (b.mtime - a.mtime);
 }
 
+let lastRunOrder = [];   // ids in the order last rendered
+
 function renderRunning(threads, running) {
   const el = $('#running');
   // one panel per active agent: everything running or mid-turn, plus most-recent idle if nothing else
-  let cands = threads.filter(t => t.status === 'running' || t.taskActive).sort(runCmp);
+  let cands = threads.filter(t => t.status === 'running' || t.taskActive);
   if (!cands.length) {
     const idle = threads.filter(t => t.status === 'idle').sort((a, b) => b.mtime - a.mtime);
     if (idle.length) cands = [idle[0]];
   }
-  runningIds = cands.map(t => t.id);
+
+  if (expanded.size && lastRunOrder.length) {
+    // a panel is expanded — hold the order steady; only place new panels
+    const pos = new Map(lastRunOrder.map((id, i) => [id, i]));
+    cands.sort((a, b) => {
+      const ai = pos.has(a.id) ? pos.get(a.id) : Infinity;
+      const bi = pos.has(b.id) ? pos.get(b.id) : Infinity;
+      return ai !== bi ? ai - bi : runCmp(a, b);
+    });
+  } else {
+    cands.sort(runCmp);
+  }
+
+  lastRunOrder = cands.map(t => t.id);
+  runningIds = lastRunOrder.slice();
   if (!cands.length) {
     el.innerHTML = '<div class="empty">No session is currently running.</div>';
     return;
@@ -693,6 +709,7 @@ $('#runSort').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   [...$('#runSort').children].forEach(x => x.classList.toggle('on', x === b));
   runSort = b.dataset.s;
+  lastRunOrder = [];   // explicit sort request — re-sort now even if a panel is open
   if (lastSnap) render(lastSnap);
 });
 
