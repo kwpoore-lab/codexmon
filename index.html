@@ -30,6 +30,9 @@
   .seg button { background: var(--panel); color: var(--dim); border: 0; padding: 4px 12px; font: inherit;
     font-size: 12px; cursor: pointer; }
   .seg button.on { background: var(--accent); color: #04121f; }
+  #livePause { background: var(--panel); color: var(--dim); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 12px; font: inherit; font-size: 12px; cursor: pointer; margin-right: 10px; }
+  #livePause.on { background: var(--yellow); color: #04121f; border-color: var(--yellow); }
   #conn { width: 8px; height: 8px; border-radius: 50%; background: var(--red); display: inline-block; }
   #conn.ok { background: var(--green); }
   main { padding: 18px 20px 60px; max-width: 1240px; margin: 0 auto; }
@@ -222,6 +225,7 @@
     <div id="usageSummary" class="tgrand" hidden></div>
     <h2>Prompts running now
       <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
+        <button id="livePause" type="button" title="Pause live updates so you can scroll — nothing is lost, updates just queue">⏸ Pause</button>
         sort
         <span class="seg" id="runSort">
           <button data-s="started" class="on">Started</button><button data-s="tokens">Tokens</button>
@@ -322,12 +326,31 @@ let lastSnap = null;
 // ---------------------------------------------------------------------------
 // SSE
 // ---------------------------------------------------------------------------
+// Pausing only holds off re-rendering the live panel so scroll position isn't
+// disturbed — the server keeps every command regardless, so unpausing just
+// renders the freshest snapshot already received; nothing is missed.
+let livePaused = false;
+let pendingSnap = null;
+
 function connect() {
   const es = new EventSource('/events');
   es.onopen = () => $('#conn').classList.add('ok');
   es.onerror = () => { $('#conn').classList.remove('ok'); $('#hdrstat').textContent = 'reconnecting…'; };
-  es.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) {} };
+  es.onmessage = (e) => {
+    try {
+      const snap = JSON.parse(e.data);
+      if (livePaused) { pendingSnap = snap; return; }
+      render(snap);
+    } catch (_) {}
+  };
 }
+
+$('#livePause').addEventListener('click', () => {
+  livePaused = !livePaused;
+  $('#livePause').classList.toggle('on', livePaused);
+  $('#livePause').textContent = livePaused ? '▶ Resume' : '⏸ Pause';
+  if (!livePaused && pendingSnap) { render(pendingSnap); pendingSnap = null; }
+});
 
 function render(snap) {
   lastSnap = snap;
