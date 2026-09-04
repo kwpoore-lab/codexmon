@@ -239,7 +239,13 @@ function applyLine(sum, raw) {
   if (ts) sum.lastEventAt = ts;
 
   // --- session_meta (line 1) ---
+  // Forked/resumed threads replay the PARENT's original session_meta record
+  // later in the file (as history context) — only the first session_meta
+  // line describes *this* file's own thread; later ones must be ignored or
+  // they clobber this thread's id/cwd/git/startedAt with the parent's.
   if (o.type === 'session_meta') {
+    if (sum._sawSessionMeta) return;
+    sum._sawSessionMeta = true;
     if (p.id) sum.id = p.id;
     sum.cwd = p.cwd || null;
     sum.project = p.cwd ? path.basename(p.cwd) : null;
