@@ -420,7 +420,13 @@ function runCmp(a, b) {
 }
 
 function renderLiveTree(threads) {
-  const nodes = new Map(threads.map(t => [t.id, t]));
+  // the same thread id can show up more than once (resumed sessions write a
+  // new rollout file but keep the original id) — keep the freshest copy
+  const nodes = new Map();
+  for (const t of threads) {
+    const prev = nodes.get(t.id);
+    if (!prev || (t.mtime || 0) >= (prev.mtime || 0)) nodes.set(t.id, t);
+  }
 
   // subagents whose parent isn't in the live window: rebuild the missing
   // ancestors from `lineage` so a guardian is never shown as a top-level root
@@ -488,7 +494,7 @@ function renderLiveTree(threads) {
     let self;
     if (t.synthetic) self = wrap(syntheticRow(t), d);
     else if (d === 0) self = `<div class="focus-wrap" data-root="${t.id}">${focusBlock(t, 0)}</div>`;
-    else self = wrap(miniCard(t, d), d);
+    else self = wrap(`<div class="focus-wrap" data-root="${t.id}">${focusBlock(t, d)}</div>`, d);
     const children = (kids.get(t.id) || []).map(c => node(c, d + 1)).join('');
     return self + children;
   };
@@ -585,7 +591,7 @@ function focusBlock(t, depth) {
             <div class="cmdscroll"><table><thead><tr>
               <th>Time</th><th>Command</th>
               <th class="num" title="billed tokens consumed by this command">Tokens</th>
-              <th class="num" title="running sum of the Tokens column through this command">Running total</th></tr></thead>
+              <th class="num" title="running sum of the Tokens column through this command, reset at the start of each prompt">Command total</th></tr></thead>
               <tbody>${cmds.length ? cmds.map(c => `<tr>
                 <td class="num">${hhmmss(c.ts)}</td>
                 <td class="cmd" title="${attr(c.cmd)}">${esc(short(c.cmd, 140))}</td>
@@ -646,8 +652,13 @@ function consumptionChart(series, H) {
   // running billed total: prefer server-computed `cum`, else accumulate `last`
   let acc = 0;
   const cum = series.map(p => (p.cum != null ? p.cum : (acc += (p.last || 0))));
-  const base = cum[0];                      // window may start mid-session
-  const cMax = (cum[cum.length - 1] - base) || 1;
+  // pad the y-domain so the line doesn't pin the top/bottom edges of the box —
+  // without this it always touches both corners (first point = bottom-left,
+  // last point = top-right) regardless of the actual shape of the data
+  const minC = Math.min(...cum), maxC = Math.max(...cum);
+  const rawRange = (maxC - minC) || 1;
+  const pad = rawRange * 0.12;
+  const base = minC - pad, cMax = rawRange + pad * 2;
   const yC = (v) => PT + ih - ((v - base) / cMax) * ih;
   const lastMax = Math.max(...series.map(p => p.last || 0)) || 1;
 
@@ -659,7 +670,7 @@ function consumptionChart(series, H) {
   const bars = series.map((p, i) => {
     if (!p.last) return '';
     const bh = (p.last / lastMax) * ih * 0.55;
-    return `<rect x="${(x(times[i]) - bw / 2).toFixed(1)}" y="${(PT + ih - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--purple)" opacity="0.28"/>`;
+    return `<rect x="${(x(times[i]) - bw / 2).toFixed(1)}" y="${(PT + ih - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--purple)" opacity="0.2"/>`;
   }).join('');
 
   const marks = series.map((p, i) => p.reset
@@ -676,8 +687,8 @@ function consumptionChart(series, H) {
 
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" style="height:${H}px" preserveAspectRatio="none">
     ${grid}${bars}${marks}
-    <path d="${area}" fill="var(--accent)" opacity="0.16"/>
-    <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+    <path d="${area}" fill="var(--accent)" opacity="0.08"/>
+    <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.3" stroke-linejoin="round"/>
     <text x="${PL}" y="${H - 6}">${tlabel(t0)}</text>
     <text x="${W - PR}" y="${H - 6}" text-anchor="end">${tlabel(t1)}</text>
     <text x="${PL + iw / 2}" y="${H - 6}" text-anchor="middle">billed tokens, cumulative (line) · per-turn tokens (bars)</text>
@@ -687,33 +698,6 @@ function kfmt(v) {
   if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
   if (v >= 1e3) return (v / 1e3).toFixed(0) + 'k';
   return Math.round(v);
-}
-
-function miniCard(t, depth) {
-  const d = depth || 0;
-  const cls = ['card', t.status];
-  if (d) cls.push('sub');
-  const name = t.title || (t.agentNickname ? 'agent ' + t.agentNickname
-    : t.agentKind ? t.agentKind : t.id.slice(0, 8));
-  const tk = t.tokens || {};
-  const pct = t.contextWindow && tk.total_tokens ? Math.min(100, 100 * tk.total_tokens / t.contextWindow) : 0;
-  const proj = t.git ? `${esc(t.git.repo || t.project)} @ ${esc(t.git.branch)}` : esc(t.project || '');
-  const badges = [];
-  if (t.primaryModel) badges.push(`<span class="badge model">${esc(t.primaryModel)}</span>`);
-  if (t.effort) badges.push(`<span class="badge">effort:${esc(t.effort)}</span>`);
-  if (d && (t.agentKind || t.agentNickname)) badges.push(`<span class="badge agent">↳ ${esc(t.agentKind || t.agentNickname)}</span>`);
-  const parent = !d && t.lineage && t.lineage.length ? t.lineage[t.lineage.length - 1] : null;
-  return `<div class="${cls.join(' ')}" onclick="openDetail('${t.id}')">
-    <div class="row"><span class="dot ${t.status}"></span><span class="title">${esc(name)}</span>
-      <span class="badge">${ago(t.ageMs)}</span>${t.taskActive ? ' <span class="badge" style="color:var(--green)">● active</span>' : ''}</div>
-    <div class="meta">${proj}</div>
-    ${parent ? `<div class="lineage" style="padding-left:0">spawned by ${lineageCrumb(parent)}</div>` : ''}
-    <div class="row" style="margin-top:5px">${badges.join(' ')}</div>
-    <div class="bar"><i style="width:${pct}%"></i></div>
-    <div class="tok"><span>${kfmtN(t.cumReqTokens || tk.total_tokens)} tok</span><span>${t.toolCallCount} cmds</span>
-      <span>${t.messageCount} msgs</span></div>
-    ${t.lastExec ? `<div class="tok hoverable" data-tip-id="${t.id}" style="margin-top:4px;color:var(--green)">$ ${esc(short(t.lastExec.first, 90))}</div>` : ''}
-  </div>`;
 }
 
 // ---------------------------------------------------------------------------
