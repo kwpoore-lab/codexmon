@@ -133,6 +133,7 @@ function emptySummary(filePath) {
     lastTotalTokens: 0,
     lastReqTokens: 0,
     lastReqInput: 0,
+    lastReqNewTokens: 0,
     messageCount: 0,
     userMessageCount: 0,
     toolCallCount: 0,
@@ -306,14 +307,20 @@ function applyLine(sum, raw) {
     const info = p.info || {};
     if (info.total_token_usage) {
       const newTotal = info.total_token_usage.total_tokens || 0;
-      // Codex's total_token_usage is per-context-window: it drops to ~0 when the
-      // conversation is compacted. Track our own monotonic running sum of
-      // per-request tokens (what's actually billed) and flag the reset points.
+      // total_token_usage is a session-cumulative counter (it can occasionally
+      // drop on compaction, but otherwise only grows — it is NOT bounded by the
+      // context window). Track our own monotonic running sum of per-request
+      // tokens (what's actually billed) and flag the reset points.
       const compacted = sum.lastTotalTokens > 1000 && newTotal < sum.lastTotalTokens * 0.5;
       sum.tokens = info.total_token_usage;
       sum.lastTotalTokens = newTotal;
-      sum.lastReqTokens = (info.last_token_usage && info.last_token_usage.total_tokens) || 0;
-      sum.lastReqInput = (info.last_token_usage && info.last_token_usage.input_tokens) || sum.lastReqInput;
+      const lastUsage = info.last_token_usage || {};
+      sum.lastReqTokens = lastUsage.total_tokens || 0;
+      sum.lastReqInput = lastUsage.input_tokens || sum.lastReqInput;
+      // "new" tokens = what this one request actually cost beyond resending
+      // cached prior context — input tokens not served from cache, plus output.
+      sum.lastReqNewTokens = Math.max(0, (lastUsage.input_tokens || 0) - (lastUsage.cached_input_tokens || 0))
+        + (lastUsage.output_tokens || 0);
       sum.cumReqTokens = (sum.cumReqTokens || 0) + sum.lastReqTokens;
       if (compacted) sum.compactions = (sum.compactions || 0) + 1;
       sum.tokenSeries.push({ t: ts, total: newTotal, last: sum.lastReqTokens, cum: sum.cumReqTokens, reset: compacted || undefined });
@@ -352,7 +359,8 @@ function applyLine(sum, raw) {
       sum.toolCallCount++;
       const input = toolInput(p);
       const entry = { ts, name: p.name || p.type, cmd: extractCmd(p.name, input).slice(0, 400),
-        total: sum.lastTotalTokens, cum: sum.cumReqTokens || 0, last: sum.lastReqTokens, turn: sum.curTurn || 0 };
+        total: sum.lastTotalTokens, cum: sum.cumReqTokens || 0, last: sum.lastReqTokens,
+        newTokens: sum.lastReqNewTokens || 0, turn: sum.curTurn || 0 };
       sum.lastExec = { name: entry.name, first: entry.cmd, ts };
       sum.commands.push(entry);
       if (sum.commands.length > 300) sum.commands.shift();
@@ -489,19 +497,20 @@ function baseCommand(entry) {
 }
 
 function buildCommands(sum) {
-  // per-command tokens = step-over-step increase in the prompt's monotonic
-  // billed sum (Codex's raw counter resets on compaction);
-  // running total = the cumulative sum of those per-command tokens
-  let prev = null, runSum = 0;
+  // per-command tokens = the request's genuinely NEW tokens (input tokens not
+  // served from cache, plus output) — e.total and e.cum both resend the full
+  // context on every request, so differencing either just reproduces that
+  // request's full (mostly-cached) cost, not what this command actually added;
+  // running total = the sum of those per-command deltas within the current
+  // prompt/turn, resetting to 0 at the start of each new prompt
+  let runSum = 0, curTurn = null;
   const out = [];
   for (const e of sum.commands) {
-    const cum = e.cum || 0;
-    let delta = 0;
-    if (prev != null && cum >= prev) delta = cum - prev;
-    if (cum > 0) prev = cum;
+    const delta = e.newTokens || 0;
+    if (e.turn !== curTurn) { curTurn = e.turn; runSum = 0; }
     runSum += delta;
     out.push({ ts: e.ts, name: e.name, cmd: e.cmd, base: baseCommand(e),
-      total: e.total, cum, last: e.last, delta, runSum, turn: e.turn || 0 });
+      total: e.total || 0, cum: e.cum || 0, last: e.last, delta, runSum, turn: e.turn || 0 });
   }
   return out;
 }
