@@ -352,7 +352,7 @@ function applyLine(sum, raw) {
       sum.toolCallCount++;
       const input = toolInput(p);
       const entry = { ts, name: p.name || p.type, cmd: extractCmd(p.name, input).slice(0, 400),
-        total: sum.lastTotalTokens, last: sum.lastReqTokens, turn: sum.curTurn || 0 };
+        total: sum.lastTotalTokens, cum: sum.cumReqTokens || 0, last: sum.lastReqTokens, turn: sum.curTurn || 0 };
       sum.lastExec = { name: entry.name, first: entry.cmd, ts };
       sum.commands.push(entry);
       if (sum.commands.length > 300) sum.commands.shift();
@@ -489,14 +489,17 @@ function baseCommand(entry) {
 }
 
 function buildCommands(sum) {
+  // running total = our monotonic billed sum (Codex's raw counter resets on
+  // compaction); per-command tokens = the step-over-step increase in it
   let prev = null;
   const out = [];
   for (const e of sum.commands) {
+    const cum = e.cum || 0;
     let delta = 0;
-    if (prev != null && e.total >= prev) delta = e.total - prev;
-    if (e.total > 0) prev = e.total;
+    if (prev != null && cum >= prev) delta = cum - prev;
+    if (cum > 0) prev = cum;
     out.push({ ts: e.ts, name: e.name, cmd: e.cmd, base: baseCommand(e),
-      total: e.total, last: e.last, delta, turn: e.turn || 0 });
+      total: e.total, cum, last: e.last, delta, turn: e.turn || 0 });
   }
   return out;
 }
