@@ -489,17 +489,19 @@ function baseCommand(entry) {
 }
 
 function buildCommands(sum) {
-  // running total = our monotonic billed sum (Codex's raw counter resets on
-  // compaction); per-command tokens = the step-over-step increase in it
-  let prev = null;
+  // per-command tokens = step-over-step increase in the prompt's monotonic
+  // billed sum (Codex's raw counter resets on compaction);
+  // running total = the cumulative sum of those per-command tokens
+  let prev = null, runSum = 0;
   const out = [];
   for (const e of sum.commands) {
     const cum = e.cum || 0;
     let delta = 0;
     if (prev != null && cum >= prev) delta = cum - prev;
     if (cum > 0) prev = cum;
+    runSum += delta;
     out.push({ ts: e.ts, name: e.name, cmd: e.cmd, base: baseCommand(e),
-      total: e.total, cum, last: e.last, delta, turn: e.turn || 0 });
+      total: e.total, cum, last: e.last, delta, runSum, turn: e.turn || 0 });
   }
   return out;
 }

@@ -561,13 +561,13 @@ function focusBlock(t, depth) {
             <p class="subh">Commands — latest first</p>
             <div class="cmdscroll"><table><thead><tr>
               <th>Time</th><th>Command</th>
-              <th class="num" title="billed tokens consumed by this command (step-over-step increase in the prompt's running total)">Tokens</th>
-              <th class="num" title="the prompt's cumulative billed tokens through this command">Running total</th></tr></thead>
+              <th class="num" title="billed tokens consumed by this command">Tokens</th>
+              <th class="num" title="running sum of the Tokens column through this command">Running total</th></tr></thead>
               <tbody>${cmds.length ? cmds.map(c => `<tr>
                 <td class="num">${hhmmss(c.ts)}</td>
                 <td class="cmd" title="${attr(c.cmd)}">${esc(short(c.cmd, 140))}</td>
                 <td class="num">${c.delta ? fmt(c.delta) : '·'}</td>
-                <td class="num">${fmt(c.cum)}</td></tr>`).join('')
+                <td class="num">${fmt(c.runSum)}</td></tr>`).join('')
                 : '<tr><td colspan="4" class="empty">No commands yet.</td></tr>'}
               </tbody></table></div>
           </div>
